@@ -244,3 +244,4 @@ def load_protect_cfg(cfg_db) -> _ProtectCfgView:
         stale_secs=f(gdb("protect.stale_secs") or genv("PROT_STALE_SECS"), 20.0),
     )
 
+
