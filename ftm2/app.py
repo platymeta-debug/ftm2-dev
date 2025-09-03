@@ -51,11 +51,6 @@ except Exception:  # pragma: no cover
     from signal.regime import RegimeClassifier, RegimeConfig  # type: ignore
 
 try:
-    from ftm2.discord_bot.notify import enqueue_alert
-except Exception:  # pragma: no cover
-    from discord_bot.notify import enqueue_alert  # type: ignore
-
-try:
     from ftm2.data.features import FeatureEngine, FeatureConfig
 except Exception:  # pragma: no cover
     from data.features import FeatureEngine, FeatureConfig  # type: ignore
@@ -108,6 +103,22 @@ try:
 except Exception:  # pragma: no cover
     from metrics.exec_quality import get_exec_quality, ExecQConfig  # type: ignore
     from core.config import load_execq_cfg  # type: ignore
+
+try:
+    from ftm2.metrics.order_ledger import get_order_ledger, OLConfig
+    from ftm2.core.config import load_order_ledger_cfg
+except Exception:  # pragma: no cover
+    from metrics.order_ledger import get_order_ledger, OLConfig  # type: ignore
+    from core.config import load_order_ledger_cfg  # type: ignore
+
+try:
+    from ftm2.monitor.kpi import KPIReporter, KPIConfig
+    from ftm2.core.config import load_kpi_cfg
+    from ftm2.discord_bot.notify import enqueue_alert
+except Exception:  # pragma: no cover
+    from monitor.kpi import KPIReporter, KPIConfig  # type: ignore
+    from core.config import load_kpi_cfg  # type: ignore
+    from discord_bot.notify import enqueue_alert  # type: ignore
 
 
 
@@ -219,6 +230,24 @@ class Orchestrator:
             alert_p90_bps=float(eqv.alert_p90_bps),
             min_fills=int(eqv.min_fills),
             report_sec=int(eqv.report_sec),
+        ))
+
+        ol = load_order_ledger_cfg(self.db)
+        self.order_ledger = get_order_ledger(
+            self.db,
+            OLConfig(
+                window_sec=int(ol.window_sec),
+                report_sec=int(ol.report_sec),
+                min_orders=int(ol.min_orders),
+            ),
+        )
+
+        kcv = load_kpi_cfg(self.db)
+        self.kpi = KPIReporter(KPIConfig(
+            enabled=kcv.enabled,
+            report_sec=kcv.report_sec,
+            to_discord=kcv.to_discord,
+            only_on_change=kcv.only_on_change,
         ))
 
 
@@ -438,6 +467,25 @@ class Orchestrator:
             except Exception as e:
                 log.warning("[GUARD][CFG] reload fail: %s", e)
 
+            try:
+                new_k = load_kpi_cfg(self.db)
+                cur = self.kpi.cfg
+                if (
+                    cur.enabled != new_k.enabled
+                    or cur.report_sec != new_k.report_sec
+                    or cur.to_discord != new_k.to_discord
+                    or cur.only_on_change != new_k.only_on_change
+                ):
+                    self.kpi.cfg = KPIConfig(
+                        new_k.enabled,
+                        new_k.report_sec,
+                        new_k.to_discord,
+                        new_k.only_on_change,
+                    )
+                    log.info("[KPI] cfg reload: %s", self.kpi.cfg)
+            except Exception as e:
+                log.warning("[KPI] cfg reload err: %s", e)
+
             time.sleep(period_s)
 
 
@@ -554,6 +602,23 @@ class Orchestrator:
                         self.db.record_event("INFO", "exec", msg)
                     except Exception:
                         pass
+
+                    # Order submit → Ledger
+                    try:
+                        self.order_ledger.on_submit({
+                            "ts_submit": int(self.bus.snapshot().get("now_ts") or 0),
+                            "symbol": r["symbol"],
+                            "side": r.get("side"),
+                            "type": self.exec_router.cfg.order_type,
+                            "price": float((self.bus.snapshot().get("marks") or {}).get(r["symbol"], {}).get("price") or 0.0),
+                            "orig_qty": float(r.get("qty_sent") or 0.0),
+                            "mode": "LIVE" if self.exec_router.cfg.active else "DRY",
+                            "reduce_only": bool("reduceOnly" in {}),
+                            "client_order_id": None,
+                            "order_id": str((r.get("result") or {}).get("orderId") or ""),
+                        })
+                    except Exception:
+                        pass
             except Exception as e:
                 log.warning("[EXEC_ERR] %s", e)
             time.sleep(period_s)
@@ -647,6 +712,58 @@ class Orchestrator:
                 log.warning("[EQ] loop err: %s", e)
             time.sleep(max(2.0, float(self.execq.cfg.report_sec)))
 
+    def _order_ledger_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                s = self.order_ledger.summary()
+                try:
+                    g = self.bus.snapshot().get("guard") or {}
+                    g2 = {**g, "exec_ledger": s}
+                    self.bus.set_guard_state(g2)
+                except Exception:
+                    pass
+                if s.get("orders", 0) >= self.order_ledger.cfg.min_orders:
+                    msg = (
+                        f"🧾 주문원장 — {s['orders']}건 / "
+                        f"체결률={s['fill_rate']*100:.1f}% 취소율={s['cancel_rate']*100:.1f}% "
+                        f"TTF(avg={s['avg_ttf_ms']:.0f}ms,p50={s['p50_ttf_ms']:.0f}ms)"
+                    )
+                    try:
+                        self.db.record_event("INFO", "order_ledger", msg)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.warning("[LEDGER] loop err: %s", e)
+            time.sleep(max(5.0, float(self.order_ledger.cfg.report_sec)))
+
+
+    def _kpi_loop(self) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                if not self.kpi.cfg.enabled:
+                    time.sleep(2.0)
+                    continue
+                k = self.kpi.compute(snap)
+                try:
+                    cur = self.bus.snapshot().get("monitor") or {}
+                    self.bus.set_monitor_state({**cur, "kpi": k})
+                except Exception:
+                    pass
+                if self.kpi.should_post(k):
+                    txt = self.kpi.format_text(k)
+                    log.info("[KPI] %s", txt.replace("\n", " | "))
+                    if self.kpi.cfg.to_discord:
+                        try:
+                            enqueue_alert(txt, intent="panel")
+                        except Exception:
+                            pass
+                else:
+                    log.debug("[KPI][SKIP] no-change")
+            except Exception as e:
+                log.warning("[KPI] loop err: %s", e)
+            time.sleep(max(3.0, float(self.kpi.cfg.report_sec)))
+
 
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
@@ -700,6 +817,16 @@ class Orchestrator:
 
         # 실행 품질 루프 시작
         t = threading.Thread(target=self._execq_loop, name="exec-quality", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 주문 원장 리포트 루프 시작
+        t = threading.Thread(target=self._order_ledger_loop, name="order-ledger", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # KPI 루프 시작
+        t = threading.Thread(target=self._kpi_loop, name="kpi", daemon=True)
         t.start()
         self._threads.append(t)
 

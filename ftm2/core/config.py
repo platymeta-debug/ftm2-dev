@@ -408,3 +408,72 @@ def load_execq_cfg(cfg_db) -> _ExecQCfgView:
         report_sec=i(gdb("eq.report_sec") or genv("EQ_REPORT_SEC"), 30),
     )
 
+
+@dataclass
+class _OLCfgView:
+    window_sec: int
+    report_sec: int
+    min_orders: int
+
+
+def load_order_ledger_cfg(cfg_db) -> _OLCfgView:
+    """
+    ENV: OL_WINDOW_SEC, OL_REPORT_SEC, OL_MIN_ORDERS
+    DB : ol.window_sec, ol.report_sec, ol.min_orders
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+
+    return _OLCfgView(
+        window_sec=i(gdb("ol.window_sec") or genv("OL_WINDOW_SEC"), 600),
+        report_sec=i(gdb("ol.report_sec") or genv("OL_REPORT_SEC"), 60),
+        min_orders=i(gdb("ol.min_orders") or genv("OL_MIN_ORDERS"), 5),
+    )
+
+
+@dataclass
+class _KPICfgView:
+    enabled: bool
+    report_sec: int
+    to_discord: bool
+    only_on_change: bool
+
+def load_kpi_cfg(cfg_db) -> _KPICfgView:
+    """
+    ENV: KPI_ENABLED, KPI_REPORT_SEC, KPI_TO_DISCORD, KPI_ONLY_ON_CHANGE
+    DB : kpi.enabled, kpi.report_sec, kpi.to_discord, kpi.only_on_change
+    """
+    def gdb(k):
+        try: return cfg_db.get_config(k)
+        except Exception: return None
+    def genv(k):
+        import os
+        v = os.getenv(k); return v if v not in (None, "") else None
+    def b(v, d):
+        if v is None: return d
+        return str(v).strip().lower() in ("1","true","yes","y","on")
+    def i(v, d):
+        try: return int(float(v)) if v is not None else d
+        except Exception: return d
+
+    return _KPICfgView(
+        enabled=b(gdb("kpi.enabled")      or genv("KPI_ENABLED"),       True),
+        report_sec=i(gdb("kpi.report_sec") or genv("KPI_REPORT_SEC"),   30),
+        to_discord=b(gdb("kpi.to_discord") or genv("KPI_TO_DISCORD"),   True),
+        only_on_change=b(gdb("kpi.only_on_change") or genv("KPI_ONLY_ON_CHANGE"), True),
+    )
