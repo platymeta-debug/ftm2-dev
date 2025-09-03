@@ -40,4 +40,8 @@
 2025-09-18 v0.4.0
 - feat(replay): ndjson/CSV 캡처 재생 엔진 추가 — 속도배율/루프 지원, StateBus mark/kline 주입
 - feat(backtest): CSV 기반 통합 백테스트 러너 추가 — 더미 예측+RiskEngine→체결 시뮬, trades/equity/pnl CSV 출력 및 CLI
+- feat(modes): 데이터/트레이드 듀얼 모드 추가 — DATA_MODE(live|testnet|replay) + TRADE_MODE(dry|testnet|live)
+- feat(streams): 공개 데이터와 유저스트림 클라이언트 분리 주입 지원
+- feat(app): 하이브리드 결선(live 차트 + testnet 주문) 기본 시나리오 추가
+
 

@@ -578,3 +578,41 @@ def load_backtest_cfg(cfg_db) -> _BacktestCfgView:
         end_ms=i(gdb("bt.end_ms") or genv("BT_END_MS"), None),
     )
 
+
+
+# --- Dual-mode loader ---
+@dataclass
+class _ModesCfgView:
+    data_mode: str   # live | testnet | replay
+    trade_mode: str  # dry  | testnet | live
+
+
+# [ANCHOR:DUAL_MODE]
+def load_modes_cfg(cfg_db) -> _ModesCfgView:
+    """
+    ENV: DATA_MODE, TRADE_MODE
+    DB : modes.data, modes.trade
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    dm = (gdb("modes.data") or genv("DATA_MODE") or "live").lower()
+    tm = (gdb("modes.trade") or genv("TRADE_MODE") or "dry").lower()
+    if dm not in ("live", "testnet", "replay"):
+        dm = "live"
+    if tm not in ("dry", "testnet", "live"):
+        tm = "dry"
+    return _ModesCfgView(dm, tm)
+

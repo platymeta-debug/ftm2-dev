@@ -19,10 +19,12 @@ if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # [ANCHOR:STREAMS]
+# [ANCHOR:DUAL_MODE]
 class StreamManager:
     def __init__(
         self,
-        client: BinanceClient,
+        data_client: BinanceClient,
+        user_client: Optional[BinanceClient],
         bus: StateBus,
         symbols: List[str],
         kline_intervals: List[str],
@@ -30,7 +32,12 @@ class StreamManager:
         use_mark: bool = True,
         use_user: bool = True,
     ) -> None:
-        self.cli = client
+        """
+        data_client: 공개 데이터(LIVE/TESTNET 상관없음)
+        user_client: 유저스트림/계정 이벤트용(TRADE_MODE 기준). 없으면 미사용.
+        """
+        self.data_cli = data_client
+        self.user_cli = user_client
         self.bus = bus
         self.symbols = symbols
         self.kline_intervals = kline_intervals
@@ -49,14 +56,14 @@ class StreamManager:
         # kline
         for sym in self.symbols:
             for itv in self.kline_intervals:
-                h = self.cli.subscribe_kline(sym, itv, self._on_kline)
+                h = self.data_cli.subscribe_kline(sym, itv, self._on_kline)
                 if h.error:
                     log.warning("[WS HANDLE_ERR] kline %s %s %s", sym, itv, h.error)
                 self._handles.append(h)
         # mark price
         if self.use_mark:
             for sym in self.symbols:
-                h = self.cli.subscribe_mark_price(sym, self._on_mark)
+                h = self.data_cli.subscribe_mark_price(sym, self._on_mark)
                 if h.error:
                     log.warning("[WS HANDLE_ERR] markPrice %s %s", sym, h.error)
                 self._handles.append(h)
@@ -65,12 +72,12 @@ class StreamManager:
                  ",".join(self.kline_intervals), self.use_mark, len(self.symbols))
 
         # user stream
-        if self.use_user and self.cli.key and self.cli.secret:
-            r = self.cli.start_user_stream()
+        if self.use_user and self.user_cli and self.user_cli.key and self.user_cli.secret:
+            r = self.user_cli.start_user_stream()
             if r.get("ok"):
                 self._listen_key = r["data"].get("listenKey")
                 if self._listen_key:
-                    h = self.cli.subscribe_user(self._listen_key, self._on_user)
+                    h = self.user_cli.subscribe_user(self._listen_key, self._on_user)
                     if h.error:
                         log.warning("[WS HANDLE_ERR] user %s", h.error)
                     self._handles.append(h)
@@ -88,9 +95,9 @@ class StreamManager:
     def stop(self) -> None:
         self._stop.set()
         # close user stream first
-        if self._listen_key:
+        if self._listen_key and self.user_cli:
             try:
-                self.cli.close_user_stream(self._listen_key)
+                self.user_cli.close_user_stream(self._listen_key)
             except Exception:
                 pass
         # stop ws handles
@@ -209,13 +216,13 @@ class StreamManager:
                 break
             if not self._listen_key:
                 continue
-            r = self.cli.keepalive_user_stream(self._listen_key)
+            r = self.user_cli.keepalive_user_stream(self._listen_key) if self.user_cli else {"ok": False}
             if r.get("ok"):
                 log.debug("[KEEPALIVE] ok key=%s", self._listen_key)
             else:
                 log.warning("[KEEPALIVE] failed %s → try re-create", r.get("error"))
                 # 재생성
-                r2 = self.cli.start_user_stream()
+                r2 = self.user_cli.start_user_stream() if self.user_cli else {"ok": False}
                 if r2.get("ok"):
                     self._listen_key = r2["data"].get("listenKey")
                     log.info("[LISTENKEY] rotated key=%s", self._listen_key)

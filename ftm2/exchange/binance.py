@@ -160,6 +160,29 @@ class BinanceClient:
             log.warning("🔒 Binance API 키가 비어 있습니다. public 데이터만 동작하며 주문/계정 관련 기능은 비활성화됩니다.")
         return cli
 
+    # [ANCHOR:DUAL_MODE]
+    @classmethod
+    def for_data(cls, mode: str = "live") -> "BinanceClient":
+        """
+        공개 시세/클라인 전용 클라이언트. API 키 불필요.
+        mode: live | testnet | replay(=testnet)
+        """
+        return cls(
+            mode=("testnet" if mode == "testnet" else "live"),
+            order_active=False,
+        )
+
+    @classmethod
+    def for_trade(cls, mode: str = "testnet", order_active: bool = False) -> "BinanceClient":
+        """
+        주문/유저스트림 전용 클라이언트.
+        mode: dry | testnet | live
+        dry → 테스트넷 엔드포인트, 주문 비활성화
+        """
+        if mode == "dry":
+            return cls(mode="testnet", order_active=False)
+        return cls(mode=("live" if mode == "live" else "testnet"), order_active=order_active)
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------

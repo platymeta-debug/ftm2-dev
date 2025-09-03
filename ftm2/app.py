@@ -18,16 +18,18 @@ from typing import List
 try:
     from ftm2.core.env import load_env_chain
     from ftm2.core.state import StateBus
-    from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
     from core.env import load_env_chain  # type: ignore
     from core.state import StateBus  # type: ignore
-    from data.streams import StreamManager  # type: ignore
 
 try:
+    from ftm2.core.config import load_modes_cfg
     from ftm2.exchange.binance import BinanceClient
+    from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
+    from core.config import load_modes_cfg  # type: ignore
     from exchange.binance import BinanceClient  # type: ignore
+    from data.streams import StreamManager  # type: ignore
 
 try:
     from ftm2.core.persistence import Persistence
@@ -145,8 +147,6 @@ class Orchestrator:
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.bus = StateBus()
-        self.cli = BinanceClient.from_env(order_active=False)
-        self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -154,6 +154,20 @@ class Orchestrator:
             self.db.record_event("INFO", "system", "boot")
         except Exception:
             pass
+
+        modes = load_modes_cfg(self.db)
+        # [ANCHOR:DUAL_MODE]
+        self.cli_data = BinanceClient.for_data(modes.data_mode)
+        self.cli_trade = BinanceClient.for_trade(modes.trade_mode, order_active=True)
+        self.streams = StreamManager(
+            self.cli_data,
+            None if modes.trade_mode == "dry" else self.cli_trade,
+            self.bus,
+            self.symbols,
+            self.kline_intervals,
+            use_mark=True,
+            use_user=True,
+        )
 
         self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
         self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
@@ -179,7 +193,7 @@ class Orchestrator:
 
         exv = load_exec_cfg(self.db)
         self.exec_router = OrderRouter(
-            self.cli,
+            self.cli_trade,
             ExecConfig(
                 active=exv.active,
                 cooldown_s=exv.cooldown_s,
@@ -207,7 +221,7 @@ class Orchestrator:
 
         oov = load_open_orders_cfg(self.db)
         self.oo_mgr = OpenOrdersManager(
-            self.cli, self.bus, self.exec_router,
+            self.cli_trade, self.bus, self.exec_router,
             OOConfig(
                 enabled=oov.enabled,
                 poll_s=oov.poll_s,
@@ -217,6 +231,10 @@ class Orchestrator:
                 max_open_per_sym=oov.max_open_per_sym,
             ),
         )
+
+        # trade-mode clients for execution-related modules
+        self.exec_router.cli = self.cli_trade
+        self.oo_mgr.cli = self.cli_trade
 
 
         gcv = load_guard_cfg(self.db)
@@ -286,7 +304,7 @@ class Orchestrator:
     # -------- optional: simple REST poller (mark price) ----------
     def _price_poller(self, symbol: str, interval_s: float = 3.0) -> None:
         while not self._stop.is_set():
-            r = self.cli.mark_price(symbol)
+            r = self.cli_data.mark_price(symbol)
             if r.get("ok"):
                 d = r["data"]
                 price = float(d.get("markPrice", 0.0))
