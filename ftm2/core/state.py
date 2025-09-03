@@ -12,6 +12,7 @@ import time
 from collections import deque
 from typing import Dict, Tuple, Any, List
 
+
 # [ANCHOR:STATE_BUS]
 class StateBus:
     def __init__(self) -> None:

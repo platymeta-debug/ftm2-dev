@@ -88,6 +88,7 @@ except Exception:  # pragma: no cover
 
 
 
+
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -162,6 +163,7 @@ class Orchestrator:
                 cancel_on_stale=pcv.cancel_on_stale,
             ),
         )
+
 
 
         self._stop = threading.Event()
@@ -299,6 +301,7 @@ class Orchestrator:
                     or rc.eps_abs != new_pcv.eps_abs
                     or rc.partial_timeout_s != new_pcv.partial_timeout_s
                     or rc.cancel_on_stale != new_pcv.cancel_on_stale
+
                 ):
                     self.reconciler.cfg = ProtectConfig(
                         slip_warn_pct=new_pcv.slip_warn_pct,
@@ -309,6 +312,7 @@ class Orchestrator:
                         eps_abs=new_pcv.eps_abs,
                         partial_timeout_s=new_pcv.partial_timeout_s,
                         cancel_on_stale=new_pcv.cancel_on_stale,
+
                     )
                     log.info("[PROTECT_CFG_RELOAD] 적용: %s", self.reconciler.cfg)
             except Exception as e:
@@ -449,6 +453,7 @@ class Orchestrator:
             except Exception as e:
                 log.warning("[RECON] loop err: %s", e)
             time.sleep(period_s)
+
 
 
     def start(self) -> None:
