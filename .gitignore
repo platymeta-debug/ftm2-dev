@@ -1,0 +1,30 @@
+# Environments
+.env
+.env.*
+token.env
+token.env.*
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+pip-wheel-metadata/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Databases & logs
+*.db
+*.sqlite
+runtime/*.db
+runtime/*.sqlite
+runtime/*.log
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
