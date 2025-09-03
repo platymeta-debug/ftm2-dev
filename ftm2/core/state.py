@@ -3,13 +3,13 @@
 스레드-세이프 전역 StateBus
 - marks: {symbol: {"price": float, "time": int}}
 - klines: {(symbol, interval): last_bar_dict}
-- positions: [ {..}, ... ]
+- positions: {symbol: {..}}
 - account: {...}
 """
 from __future__ import annotations
 import threading
 import time
-from typing import Dict, Tuple, Any, List
+from typing import Dict, Tuple, Any
 
 # [ANCHOR:STATE_BUS]
 class StateBus:
@@ -17,7 +17,7 @@ class StateBus:
         self._lock = threading.RLock()
         self._marks: Dict[str, Dict[str, Any]] = {}
         self._klines: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        self._positions: List[Dict[str, Any]] = []
+        self._positions: Dict[str, Dict[str, Any]] = {}
         self._account: Dict[str, Any] = {}
         self._features: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._regimes: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -36,9 +36,9 @@ class StateBus:
         with self._lock:
             self._klines[(symbol, interval)] = dict(bar)
 
-    def set_positions(self, positions: List[Dict[str, Any]]) -> None:
+    def set_positions(self, positions: Dict[str, Dict[str, Any]]) -> None:
         with self._lock:
-            self._positions = list(positions)
+            self._positions = dict(positions)
 
     def set_account(self, account: Dict[str, Any]) -> None:
         with self._lock:
@@ -71,7 +71,7 @@ class StateBus:
             return {
                 "marks": dict(self._marks),
                 "klines": dict(self._klines),
-                "positions": list(self._positions),
+                "positions": dict(self._positions),
                 "account": dict(self._account),
                 "features": dict(self._features),
                 "regimes": dict(self._regimes),
