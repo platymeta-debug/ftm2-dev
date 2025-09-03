@@ -24,6 +24,7 @@ class StateBus:
         self._forecasts: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._targets: Dict[str, Dict[str, Any]] = {}
         self._risk: Dict[str, Any] = {}
+
         self._boot_ts = int(time.time() * 1000)
 
     # --- updates
@@ -62,6 +63,7 @@ class StateBus:
     def set_risk_state(self, state: Dict[str, Any]) -> None:
         with self._lock:
             self._risk = dict(state)
+
 
     # --- reads
     def snapshot(self) -> Dict[str, Any]:

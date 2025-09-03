@@ -37,6 +37,7 @@ def test_load_forecast_cfg_priority(monkeypatch):
     assert cfg.flat_thr == base.flat_thr
 
 
+
 def test_load_risk_cfg_priority(monkeypatch):
     monkeypatch.setenv("CORR_CAP_PER_SIDE", "0.5")
     db = DummyDB({"risk.target_pct": "0.4"})
@@ -68,3 +69,4 @@ def test_reload_cfg_loop_updates(monkeypatch):
     th.join(timeout=1.0)
     assert abs(obj.forecast.cfg.strong_thr - 0.9) < 1e-9
     assert abs(obj.risk.cfg.atr_k - 3.0) < 1e-9
+

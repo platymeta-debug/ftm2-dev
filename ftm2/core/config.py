@@ -8,6 +8,7 @@ import os
 from typing import Dict, Tuple, Optional
 from dataclasses import dataclass
 
+
 try:
     from ftm2.signal.forecast import ForecastConfig
 except Exception:  # pragma: no cover
@@ -89,6 +90,7 @@ def load_forecast_cfg(cfg_db) -> ForecastConfig:
     return cfg
 
 
+
 @dataclass
 class _RiskCfgView:
     risk_target_pct: float
@@ -141,3 +143,4 @@ def load_risk_cfg(cfg_db) -> _RiskCfgView:
         min_notional=mn,
         equity_override=eo_f,
     )
+

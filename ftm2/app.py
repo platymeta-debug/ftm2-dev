@@ -73,6 +73,7 @@ except Exception:  # pragma: no cover
     from core.config import load_forecast_cfg, load_risk_cfg  # type: ignore
 
 
+
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -87,12 +88,9 @@ class Orchestrator:
         self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
-
-
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
-
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -157,6 +155,7 @@ class Orchestrator:
                 log.debug("[FEATURE_UPDATE] %s %s T=%s", r["symbol"], r["interval"], r["T"])
             time.sleep(period_s)
 
+
     def _regime_loop(self, period_s: float = 0.5) -> None:
         """
         닫힌 봉 기반 피처에서 레짐을 산출하고, 변경 시만 StateBus/알림을 갱신한다.
@@ -184,6 +183,7 @@ class Orchestrator:
                     pass
             time.sleep(period_s)
 
+
     def _reload_cfg_loop(self, period_s: float = 10.0) -> None:
         """
         DB/ENV에서 예측 파라미터를 주기적으로 재로딩.
@@ -198,6 +198,7 @@ class Orchestrator:
                     log.info("[FORECAST_CFG_RELOAD] 가중치/임계 업데이트 적용: %s", new_cfg)
             except Exception as e:
                 log.warning("[FORECAST_CFG_RELOAD] 실패: %s", e)
+
             try:
                 new_risk_view = load_risk_cfg(self.db)
                 cur = self.risk.cfg
@@ -221,6 +222,7 @@ class Orchestrator:
             except Exception as e:
                 log.warning("[RISK_CFG_RELOAD] 실패: %s", e)
             time.sleep(period_s)
+
 
     def _forecast_loop(self, period_s: float = 0.5) -> None:
         """
@@ -251,6 +253,7 @@ class Orchestrator:
                 except Exception:
                     pass
             time.sleep(period_s)
+
 
     def _risk_loop(self, period_s: float = 0.5) -> None:
         """
@@ -314,6 +317,7 @@ class Orchestrator:
                 day_cut_sent = False
 
             time.sleep(period_s)
+
 
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
