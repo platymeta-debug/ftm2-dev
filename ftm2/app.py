@@ -96,6 +96,7 @@ except Exception:  # pragma: no cover
     from core.config import load_open_orders_cfg  # type: ignore
 
 
+
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -170,6 +171,7 @@ class Orchestrator:
                 cancel_on_stale=pcv.cancel_on_stale,
             ),
         )
+
         oov = load_open_orders_cfg(self.db)
         self.oo_mgr = OpenOrdersManager(
             self.cli, self.bus, self.exec_router,
@@ -182,6 +184,7 @@ class Orchestrator:
                 max_open_per_sym=oov.max_open_per_sym,
             ),
         )
+
 
 
 
@@ -320,6 +323,7 @@ class Orchestrator:
                     or rc.eps_abs != new_pcv.eps_abs
                     or rc.partial_timeout_s != new_pcv.partial_timeout_s
                     or rc.cancel_on_stale != new_pcv.cancel_on_stale
+
                 ):
                     self.reconciler.cfg = ProtectConfig(
                         slip_warn_pct=new_pcv.slip_warn_pct,
@@ -330,10 +334,12 @@ class Orchestrator:
                         eps_abs=new_pcv.eps_abs,
                         partial_timeout_s=new_pcv.partial_timeout_s,
                         cancel_on_stale=new_pcv.cancel_on_stale,
+
                     )
                     log.info("[PROTECT_CFG_RELOAD] 적용: %s", self.reconciler.cfg)
             except Exception as e:
                 log.warning("[PROTECT_CFG_RELOAD] 실패: %s", e)
+
             try:
                 new_oov = load_open_orders_cfg(self.db)
                 cur = self.oo_mgr.cfg
@@ -354,6 +360,7 @@ class Orchestrator:
                     log.info('[OO_CFG_RELOAD] 적용: %s', self.oo_mgr.cfg)
             except Exception as e:
                 log.warning('[OO_CFG_RELOAD] 실패: %s', e)
+
             time.sleep(period_s)
 
 
@@ -492,6 +499,7 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+
     def _oo_loop(self) -> None:
         while not self._stop.is_set():
             snap = self.bus.snapshot()
@@ -508,6 +516,7 @@ class Orchestrator:
             except Exception as e:
                 log.warning('[OO] loop err: %s', e)
             time.sleep(max(0.5, float(self.oo_mgr.cfg.poll_s)))
+
 
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
@@ -548,11 +557,11 @@ class Orchestrator:
         t = threading.Thread(target=self._reconcile_loop, name="reconcile", daemon=True)
         t.start()
         self._threads.append(t)
+
         # 오픈오더 루프 시작
         t = threading.Thread(target=self._oo_loop, name="open-orders", daemon=True)
         t.start()
         self._threads.append(t)
-
 
         # 설정 핫리로드
         t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)

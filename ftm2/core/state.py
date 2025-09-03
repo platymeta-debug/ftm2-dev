@@ -12,6 +12,7 @@ import time
 from collections import deque
 from typing import Dict, Tuple, Any, List
 
+
 # [ANCHOR:STATE_BUS]
 class StateBus:
     def __init__(self) -> None:
@@ -27,6 +28,7 @@ class StateBus:
         self._risk: Dict[str, Any] = {}
         self._fills = deque(maxlen=1000)   # 체결 이벤트 큐
         self._open_orders: Dict[str, List[Dict[str, Any]]] = {}   # 심볼 → 오더 리스트
+
 
         self._boot_ts = int(time.time() * 1000)
 

@@ -37,6 +37,7 @@ class ProtectConfig:
     cancel_on_stale: bool = True  # 타임아웃 시 취소 수행
 
 
+
 # [ANCHOR:RECONCILE]
 class Reconciler:
     def __init__(self, bus: StateBus, db: Persistence, router: OrderRouter, cfg: ProtectConfig = ProtectConfig()) -> None:
@@ -46,6 +47,7 @@ class Reconciler:
         self.cfg = cfg
         # 주문 상태 트래커: orderId -> 정보
         self._orders: Dict[str, Dict[str, Any]] = {}
+
 
     def _save_fill(self, rec: Dict[str, Any]) -> None:
         # qty 부호(매수 +, 매도 -)
@@ -115,6 +117,7 @@ class Reconciler:
             out.append(sym)
         return out
 
+
     def _track_order(self, rec: Dict[str, Any]) -> None:
         """ORDER_TRADE_UPDATE로부터 오더 상태 업데이트"""
         oid = str(rec.get("orderId") or "")
@@ -180,6 +183,7 @@ class Reconciler:
                 log.warning("[RECON][CANCEL] 실패 %s oid=%s err=%s", sym, oid, r.get("error"))
         return kicked
 
+
     def process(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         fills = self.bus.drain_fills(200)
         slip_msgs: List[str] = []
@@ -191,6 +195,7 @@ class Reconciler:
             except Exception as e:
                 log.warning("[RECON] save_fill 실패: %s", e)
             m = self._slip_check(f, snapshot)
+
             if m:
                 slip_msgs.append(m)
             # 주문 상태 추적
