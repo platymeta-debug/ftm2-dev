@@ -27,7 +27,7 @@ def test_state_bus_snapshot():
     bus = StateBus()
     bus.update_mark("BTCUSDT", 100.0, 123)
     bus.update_kline("BTCUSDT", "1m", {"o":1})
-    bus.set_positions([{"symbol": "BTCUSDT"}])
+    bus.set_positions({"BTCUSDT": {"symbol": "BTCUSDT"}})
     bus.set_account({"balance": 1})
     bus.update_forecast("BTCUSDT", "1m", {"score": 0.1})
     bus.set_targets({"BTCUSDT": {"target_qty": 1.0}})
@@ -35,7 +35,7 @@ def test_state_bus_snapshot():
     snap = bus.snapshot()
     assert snap["marks"]["BTCUSDT"]["price"] == 100.0
     assert snap["klines"][("BTCUSDT", "1m")]["o"] == 1
-    assert snap["positions"][0]["symbol"] == "BTCUSDT"
+    assert snap["positions"]["BTCUSDT"]["symbol"] == "BTCUSDT"
     assert snap["account"]["balance"] == 1
     assert snap["features"] == {}
     assert snap["regimes"] == {}
@@ -44,3 +44,13 @@ def test_state_bus_snapshot():
     assert snap["risk"]["equity"] == 1000
     assert isinstance(snap["boot_ts"], int)
     assert isinstance(snap["now_ts"], int)
+
+
+def test_state_bus_fills_queue():
+    bus = StateBus()
+    bus.push_fill({"symbol": "BTCUSDT", "side": "BUY"})
+    bus.push_fill({"symbol": "ETHUSDT", "side": "SELL"})
+    out = bus.drain_fills()
+    assert len(out) == 2
+    assert out[0]["symbol"] == "BTCUSDT"
+    assert bus.drain_fills() == []
