@@ -478,3 +478,139 @@ def load_kpi_cfg(cfg_db) -> _KPICfgView:
         only_on_change=b(gdb("kpi.only_on_change") or genv("KPI_ONLY_ON_CHANGE"), True),
     )
 
+
+
+@dataclass
+class _ReplayCfgView:
+    enabled: bool
+    src: str
+    speed: float
+    loop: bool
+    default_interval: str
+
+def load_replay_cfg(cfg_db) -> _ReplayCfgView:
+    """
+    ENV: REPLAY_ENABLED, REPLAY_SRC, REPLAY_SPEED, REPLAY_LOOP, REPLAY_DEFAULT_INTERVAL
+    DB : replay.enabled, replay.src, replay.speed, replay.loop, replay.default_interval
+    """
+    def gdb(k):
+        try: return cfg_db.get_config(k)
+        except Exception: return None
+    def genv(k):
+        import os
+        v = os.getenv(k); return v if v not in (None, "") else None
+    def b(v, d):
+        if v is None: return d
+        return str(v).strip().lower() in ("1","true","yes","y","on")
+    def f(v, d):
+        try: return float(v) if v is not None else d
+        except Exception: return d
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    return _ReplayCfgView(
+        enabled=b(gdb("replay.enabled") or genv("REPLAY_ENABLED"), False),
+        src=s(gdb("replay.src") or genv("REPLAY_SRC"), "./data/replay.ndjson"),
+        speed=f(gdb("replay.speed") or genv("REPLAY_SPEED"), 5.0),
+        loop=b(gdb("replay.loop") or genv("REPLAY_LOOP"), False),
+        default_interval=s(gdb("replay.default_interval") or genv("REPLAY_DEFAULT_INTERVAL"), "1m"),
+    )
+
+
+@dataclass
+class _BacktestCfgView:
+    input_path: str
+    symbols: str
+    interval: str
+    fees_bps: float
+    slippage_bps: float
+    exec_lag_bars: int
+    equity0: float
+    out_dir: str
+    start_ms: Optional[int]
+    end_ms: Optional[int]
+
+
+def load_backtest_cfg(cfg_db) -> _BacktestCfgView:
+    """
+    ENV: BT_INPUT, BT_SYMBOLS, BT_INTERVAL, BT_FEES_BPS, BT_SLIPPAGE_BPS, BT_EXEC_LAG,
+         BT_EQUITY0, BT_OUT_DIR, BT_START_MS, BT_END_MS
+    DB : bt.input, bt.symbols, bt.interval, bt.fees_bps, bt.slippage_bps, bt.exec_lag,
+         bt.equity0, bt.out_dir, bt.start_ms, bt.end_ms
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k) if cfg_db else None
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    return _BacktestCfgView(
+        input_path=s(gdb("bt.input") or genv("BT_INPUT"), "./data/{symbol}_1m.csv"),
+        symbols=s(gdb("bt.symbols") or genv("BT_SYMBOLS"), "BTCUSDT"),
+        interval=s(gdb("bt.interval") or genv("BT_INTERVAL"), "1m"),
+        fees_bps=f(gdb("bt.fees_bps") or genv("BT_FEES_BPS"), 1.8),
+        slippage_bps=f(gdb("bt.slippage_bps") or genv("BT_SLIPPAGE_BPS"), 1.0),
+        exec_lag_bars=i(gdb("bt.exec_lag") or genv("BT_EXEC_LAG"), 1),
+        equity0=f(gdb("bt.equity0") or genv("BT_EQUITY0"), 1000.0),
+        out_dir=s(gdb("bt.out_dir") or genv("BT_OUT_DIR"), "./reports"),
+        start_ms=i(gdb("bt.start_ms") or genv("BT_START_MS"), None),
+        end_ms=i(gdb("bt.end_ms") or genv("BT_END_MS"), None),
+    )
+
+
+# --- Dual-mode loader ---
+@dataclass
+class _ModesCfgView:
+    data_mode: str   # live | testnet | replay
+    trade_mode: str  # dry  | testnet | live
+
+
+# [ANCHOR:DUAL_MODE]
+def load_modes_cfg(cfg_db) -> _ModesCfgView:
+    """
+    ENV: DATA_MODE, TRADE_MODE
+    DB : modes.data, modes.trade
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    dm = (gdb("modes.data") or genv("DATA_MODE") or "live").lower()
+    tm = (gdb("modes.trade") or genv("TRADE_MODE") or "dry").lower()
+    if dm not in ("live", "testnet", "replay"):
+        dm = "live"
+    if tm not in ("dry", "testnet", "live"):
+        tm = "dry"
+    return _ModesCfgView(dm, tm)

@@ -18,16 +18,18 @@ from typing import List
 try:
     from ftm2.core.env import load_env_chain
     from ftm2.core.state import StateBus
-    from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
     from core.env import load_env_chain  # type: ignore
     from core.state import StateBus  # type: ignore
-    from data.streams import StreamManager  # type: ignore
 
 try:
+    from ftm2.core.config import load_modes_cfg
     from ftm2.exchange.binance import BinanceClient
+    from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
+    from core.config import load_modes_cfg  # type: ignore
     from exchange.binance import BinanceClient  # type: ignore
+    from data.streams import StreamManager  # type: ignore
 
 try:
     from ftm2.core.persistence import Persistence
@@ -122,6 +124,13 @@ except Exception:  # pragma: no cover
 
 
 
+try:
+    from ftm2.replay.engine import ReplayEngine, ReplayConfig
+    from ftm2.core.config import load_replay_cfg
+except Exception:  # pragma: no cover
+    from replay.engine import ReplayEngine, ReplayConfig  # type: ignore
+    from core.config import load_replay_cfg  # type: ignore
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -138,8 +147,6 @@ class Orchestrator:
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.bus = StateBus()
-        self.cli = BinanceClient.from_env(order_active=False)
-        self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -147,6 +154,20 @@ class Orchestrator:
             self.db.record_event("INFO", "system", "boot")
         except Exception:
             pass
+
+        modes = load_modes_cfg(self.db)
+        # [ANCHOR:DUAL_MODE]
+        self.cli_data = BinanceClient.for_data(modes.data_mode)
+        self.cli_trade = BinanceClient.for_trade(modes.trade_mode, order_active=True)
+        self.streams = StreamManager(
+            self.cli_data,
+            None if modes.trade_mode == "dry" else self.cli_trade,
+            self.bus,
+            self.symbols,
+            self.kline_intervals,
+            use_mark=True,
+            use_user=True,
+        )
 
         self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
         self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
@@ -172,7 +193,7 @@ class Orchestrator:
 
         exv = load_exec_cfg(self.db)
         self.exec_router = OrderRouter(
-            self.cli,
+            self.cli_trade,
             ExecConfig(
                 active=exv.active,
                 cooldown_s=exv.cooldown_s,
@@ -200,7 +221,7 @@ class Orchestrator:
 
         oov = load_open_orders_cfg(self.db)
         self.oo_mgr = OpenOrdersManager(
-            self.cli, self.bus, self.exec_router,
+            self.cli_trade, self.bus, self.exec_router,
             OOConfig(
                 enabled=oov.enabled,
                 poll_s=oov.poll_s,
@@ -210,6 +231,10 @@ class Orchestrator:
                 max_open_per_sym=oov.max_open_per_sym,
             ),
         )
+
+        # trade-mode clients for execution-related modules
+        self.exec_router.cli = self.cli_trade
+        self.oo_mgr.cli = self.cli_trade
 
 
         gcv = load_guard_cfg(self.db)
@@ -242,7 +267,6 @@ class Orchestrator:
                 min_orders=int(ol.min_orders),
             ),
         )
-
         kcv = load_kpi_cfg(self.db)
         self.kpi = KPIReporter(KPIConfig(
             enabled=kcv.enabled,
@@ -250,6 +274,19 @@ class Orchestrator:
             to_discord=kcv.to_discord,
             only_on_change=kcv.only_on_change,
         ))
+        # REPLAY 엔진 준비 (라이브 스트림과 병행하지 않도록 ENV로 제어)
+        rcv = load_replay_cfg(self.db)
+        self.replay = ReplayEngine(
+            self.bus, self.db,
+            ReplayConfig(
+                enabled=rcv.enabled,
+                src=rcv.src,
+                speed=rcv.speed,
+                loop=rcv.loop,
+                default_interval=rcv.default_interval,
+            ),
+        )
+
 
 
 
@@ -267,7 +304,7 @@ class Orchestrator:
     # -------- optional: simple REST poller (mark price) ----------
     def _price_poller(self, symbol: str, interval_s: float = 3.0) -> None:
         while not self._stop.is_set():
-            r = self.cli.mark_price(symbol)
+            r = self.cli_data.mark_price(symbol)
             if r.get("ok"):
                 d = r["data"]
                 price = float(d.get("markPrice", 0.0))
@@ -775,8 +812,15 @@ class Orchestrator:
         #     t.start()
         #     self._threads.append(t)
 
-        # WS 스트림 시작
-        self.streams.start()
+        # WS 스트림 또는 리플레이 시작
+        if getattr(self.replay.cfg, "enabled", False):
+            log.info("[APP] REPLAY 모드: 파일=%s 속도=%.2fx", self.replay.cfg.src, self.replay.cfg.speed)
+            try:
+                self.replay.start()
+            except Exception as e:
+                log.warning("[APP][REPLAY] 시작 실패: %s", e)
+        else:
+            self.streams.start()
 
         # 피처 루프 시작
         t = threading.Thread(target=self._features_loop, name="features", daemon=True)
@@ -911,6 +955,10 @@ class Orchestrator:
         self._stop.set()
         try:
             self.streams.stop()
+        except Exception:
+            pass
+        try:
+            self.replay.stop()
         except Exception:
             pass
         for t in list(self._threads):
