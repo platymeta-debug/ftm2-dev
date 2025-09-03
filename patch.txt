@@ -11,4 +11,5 @@
 2025-09-03 v0.1.0
 - feat(connector): add Binance USDⓈ-M client stubs with testnet/live toggle (REST/WS)
 - feat(orch): add minimal orchestrator & state bus with env loader, heartbeat, and REST mark-price poller
+- feat(streams): add StreamManager for kline/markPrice/user streams and StateBus updates
 

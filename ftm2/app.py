@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 FTM2 Orchestrator (minimal)
-- ENV 로딩 → BinanceClient 생성 → (옵션) REST 마크프라이스 폴러 시작
+- ENV 로딩 → BinanceClient 생성 → WS 스트림(StreamManager) 시작
 - 10초 하트비트 로그
 - Ctrl+C 안전 종료
 """
@@ -18,6 +18,8 @@ from typing import List
 from ftm2.core.env import load_env_chain
 from ftm2.core.state import StateBus
 from ftm2.exchange.binance import BinanceClient
+from ftm2.data.streams import StreamManager
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -30,16 +32,17 @@ class Orchestrator:
         self.mode = (os.getenv("MODE") or "testnet").lower()
         self.symbols: List[str] = [s.strip() for s in (os.getenv("SYMBOLS") or "BTCUSDT,ETHUSDT").split(",") if s.strip()]
         self.tf_exec = os.getenv("TF_EXEC") or "1m"
-        self.tf_signal = os.getenv("TF_SIGNAL") or "1m"
-
+        self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
+        self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
+
 
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
 
         # 부팅 요약
-        log.info("[BOOT_ENV_SUMMARY] MODE=%s, SYMBOLS=%s, TF_EXEC=%s, TF_SIGNAL=%s", self.mode, self.symbols, self.tf_exec, self.tf_signal)
+        log.info("[BOOT_ENV_SUMMARY] MODE=%s, SYMBOLS=%s, TF_EXEC=%s, TF_SIGNAL=%s", self.mode, self.symbols, self.tf_exec, self.kline_intervals)
         for k in ("DB_PATH", "CONFIG_PATH", "PATCH_LOG"):
             if os.getenv(k):
                 log.info("[BOOT_PATH] %s=%s", k, os.getenv(k))
@@ -57,11 +60,15 @@ class Orchestrator:
             time.sleep(interval_s)
 
     def start(self) -> None:
-        # 심볼별 마크프라이스 폴러 시작 (WS는 M1.3에서 대체)
-        for sym in self.symbols:
-            t = threading.Thread(target=self._price_poller, args=(sym,), name=f"poll:{sym}", daemon=True)
-            t.start()
-            self._threads.append(t)
+        # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
+        # for sym in self.symbols:
+        #     t = threading.Thread(target=self._price_poller, args=(sym,), name=f"poll:{sym}", daemon=True)
+        #     t.start()
+        #     self._threads.append(t)
+
+        # WS 스트림 시작
+        self.streams.start()
+
 
         # 하트비트 스레드
         t = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
@@ -95,6 +102,11 @@ class Orchestrator:
         if self._stop.is_set():
             return
         self._stop.set()
+        try:
+            self.streams.stop()
+        except Exception:
+            pass
+
         for t in list(self._threads):
             if t.is_alive():
                 t.join(timeout=2.0)
