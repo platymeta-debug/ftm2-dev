@@ -37,3 +37,7 @@
 - feat(order_ledger): 주문 원장/이벤트 테이블(orders/order_events) 추가 및 제출·체결 업데이트 적재, 윈도우 체결률/TTF·취소율 리포트
 - feat(kpi): 전략·리스크·실행 품질 KPI 리포터 추가 — 콘솔/디스코드 한국어 패널, StateBus.monitor.kpi 반영 및 핫리로드
 
+2025-09-18 v0.4.0
+- feat(replay): ndjson/CSV 캡처 재생 엔진 추가 — 속도배율/루프 지원, StateBus mark/kline 주입
+- feat(backtest): CSV 기반 통합 백테스트 러너 추가 — 더미 예측+RiskEngine→체결 시뮬, trades/equity/pnl CSV 출력 및 CLI
+
