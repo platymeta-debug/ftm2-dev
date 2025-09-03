@@ -35,5 +35,6 @@ def test_state_bus_snapshot():
     assert snap["positions"][0]["symbol"] == "BTCUSDT"
     assert snap["account"]["balance"] == 1
     assert snap["features"] == {}
+    assert snap["regimes"] == {}
     assert isinstance(snap["boot_ts"], int)
     assert isinstance(snap["now_ts"], int)

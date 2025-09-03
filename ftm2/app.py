@@ -42,9 +42,17 @@ except Exception:  # pragma: no cover
 
 try:
     from ftm2.signal.dummy import DummyForecaster
-    from ftm2.discord_bot.notify import enqueue_alert
 except Exception:  # pragma: no cover
     from signal.dummy import DummyForecaster  # type: ignore
+
+try:
+    from ftm2.signal.regime import RegimeClassifier, RegimeConfig
+except Exception:  # pragma: no cover
+    from signal.regime import RegimeClassifier, RegimeConfig  # type: ignore
+
+try:
+    from ftm2.discord_bot.notify import enqueue_alert
+except Exception:  # pragma: no cover
     from discord_bot.notify import enqueue_alert  # type: ignore
 
 try:
@@ -66,6 +74,7 @@ class Orchestrator:
         self.tf_exec = os.getenv("TF_EXEC") or "1m"
         self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
+        self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
 
 
         self.bus = StateBus()
@@ -73,6 +82,8 @@ class Orchestrator:
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
         self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
         self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
+        self.regime = RegimeClassifier(self.symbols, self.regime_interval, RegimeConfig())
+
 
 
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
@@ -117,6 +128,35 @@ class Orchestrator:
                 log.debug("[FEATURE_UPDATE] %s %s T=%s", r["symbol"], r["interval"], r["T"])
             time.sleep(period_s)
 
+
+    def _regime_loop(self, period_s: float = 0.5) -> None:
+        """
+        닫힌 봉 기반 피처에서 레짐을 산출하고, 변경 시만 StateBus/알림을 갱신한다.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            changes = self.regime.process_snapshot(snap)
+            for chg in changes:
+                sym = chg["symbol"]
+                itv = chg["interval"]
+                reg = chg["regime"]
+                self.bus.update_regime(sym, itv, reg)
+                msg = (
+                    f"🧭 레짐 전환 — {sym}/{itv}: **{reg['label']}** "
+                    f"(코드: {reg['code']}, ema={reg['ema_spread']:.5f}, rv_pr={reg['rv_pr']:.3f})"
+                )
+                log.info(msg)
+                try:
+                    self.db.record_event("INFO", "regime", msg)
+                except Exception:
+                    pass
+                try:
+                    enqueue_alert(msg, intent="logs")
+                except Exception:
+                    pass
+            time.sleep(period_s)
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -131,6 +171,12 @@ class Orchestrator:
         t = threading.Thread(target=self._features_loop, name="features", daemon=True)
         t.start()
         self._threads.append(t)
+
+        # 레짐 루프 시작
+        t = threading.Thread(target=self._regime_loop, name="regime", daemon=True)
+        t.start()
+        self._threads.append(t)
+
 
         # 더미 전략 루프
         st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
