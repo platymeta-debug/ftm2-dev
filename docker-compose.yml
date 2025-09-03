@@ -1,0 +1,59 @@
+version: "3.9"
+
+x-ftm2-common: &ftm2-common
+  image: ftm2:dev
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: always
+  env_file:
+    - ./.env
+    - ./token.env   # 민감 키 (리포에 커밋 금지)
+  environment:
+    # 로그/운영 기본값 (env_file이 우선)
+    LOG_DIR: /var/log/ftm2
+    LOG_FILE: app.log
+    LOG_MAX_BYTES: 10485760
+    LOG_BACKUPS: 5
+    OPS_HTTP_ENABLED: "true"
+    OPS_HTTP_PORT: 8080
+  volumes:
+    - ./data:/data
+    - ./logs:/var/log/ftm2
+  ports:
+    - "8080:8080"
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+
+services:
+  ftm2:
+    <<: *ftm2-common
+    profiles: ["dry"]
+    environment:
+      DATA_MODE: "live"     # 실선물 차트 분석
+      TRADE_MODE: "dry"     # 주문은 드라이런
+      EXEC_ACTIVE: "0"
+
+  ftm2-testnet:
+    <<: *ftm2-common
+    container_name: ftm2-testnet
+    profiles: ["testnet"]
+    environment:
+      DATA_MODE: "live"     # 실선물 차트 분석
+      TRADE_MODE: "testnet" # 테스트넷 주문/유저스트림
+      EXEC_ACTIVE: "1"      # 실제로 테스트넷 주문
+    ports:
+      - "8080:8080"
+
+  ftm2-live:
+    <<: *ftm2-common
+    container_name: ftm2-live
+    profiles: ["live"]
+    environment:
+      DATA_MODE: "live"
+      TRADE_MODE: "live"
+      EXEC_ACTIVE: "1"
+    # 안전장치: live 프로파일만 수동 opt-in 사용 권장

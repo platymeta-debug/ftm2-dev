@@ -6,6 +6,18 @@ FTM2 Orchestrator (minimal)
 - Ctrl+C 안전 종료
 """
 from __future__ import annotations
+try:
+    from ftm2.core.logging import setup_logging
+    setup_logging()
+except Exception:
+    pass
+
+try:
+    from ftm2.ops.sentry_init import init_sentry
+    init_sentry()
+except Exception:
+    pass
+
 
 import os
 import time
@@ -35,7 +47,6 @@ try:
     from ftm2.core.persistence import Persistence
 except Exception:  # pragma: no cover
     from core.persistence import Persistence  # type: ignore
-
 
 try:
     from ftm2.discord_bot.bot import run_discord_bot
@@ -83,8 +94,6 @@ except Exception:  # pragma: no cover
     from trade.reconcile import Reconciler, ProtectConfig  # type: ignore
     from core.config import load_protect_cfg  # type: ignore
 
-
-
 try:
     from ftm2.trade.open_orders import OpenOrdersManager, OOConfig
     from ftm2.core.config import load_open_orders_cfg
@@ -122,7 +131,12 @@ except Exception:  # pragma: no cover
     from core.config import load_kpi_cfg  # type: ignore
     from discord_bot.notify import enqueue_alert  # type: ignore
 
-
+try:
+    from ftm2.ops.httpd import OpsHTTPD, OpsHttpConfig
+    from ftm2.core.config import load_ops_http_cfg
+except Exception:  # pragma: no cover
+    from ops.httpd import OpsHTTPD, OpsHttpConfig  # type: ignore
+    from core.config import load_ops_http_cfg  # type: ignore
 
 try:
     from ftm2.replay.engine import ReplayEngine, ReplayConfig
@@ -130,7 +144,6 @@ try:
 except Exception:  # pragma: no cover
     from replay.engine import ReplayEngine, ReplayConfig  # type: ignore
     from core.config import load_replay_cfg  # type: ignore
-
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -286,11 +299,13 @@ class Orchestrator:
                 default_interval=rcv.default_interval,
             ),
         )
-
-
-
-
-
+        ohv = load_ops_http_cfg(self.db)
+        self.httpd = OpsHTTPD(self.bus, OpsHttpConfig(
+            enabled=ohv.enabled,
+            host=ohv.host,
+            port=int(ohv.port),
+            ready_max_skew_s=float(ohv.ready_max_skew_s),
+        ))
 
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
@@ -899,6 +914,10 @@ class Orchestrator:
         dt.start()
         self._threads.append(dt)
 
+        try:
+            self.httpd.start()
+        except Exception as e:
+            log.warning("[OPS_HTTP] start err: %s", e)
 
         # 시그널 핸들
         try:
