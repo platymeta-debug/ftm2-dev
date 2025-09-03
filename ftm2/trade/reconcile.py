@@ -13,11 +13,15 @@ try:
     from ftm2.core.state import StateBus
     from ftm2.trade.router import OrderRouter
     from ftm2.discord_bot.notify import enqueue_alert
+    from ftm2.metrics.exec_quality import get_exec_quality
+
 except Exception:  # pragma: no cover
     from core.persistence import Persistence            # type: ignore
     from core.state import StateBus                     # type: ignore
     from trade.router import OrderRouter                # type: ignore
     from discord_bot.notify import enqueue_alert        # type: ignore
+    from metrics.exec_quality import get_exec_quality   # type: ignore
+
 
 log = logging.getLogger("ftm2.recon")
 if not log.handlers:
@@ -198,12 +202,28 @@ class Reconciler:
 
             if m:
                 slip_msgs.append(m)
+            try:
+                sym = f.get("symbol")
+                side = f.get("side")
+                fill_px = float(f.get("lastPrice") or f.get("avgPrice") or 0.0)
+                mark_px = float((snapshot.get("marks") or {}).get(sym, {}).get("price") or 0.0)
+                get_exec_quality().ingest_fill(sym, side, float(f.get("lastQty") or 0.0), fill_px, mark_px, int(f.get("ts") or 0))
+            except Exception:
+                pass
+
             # 주문 상태 추적
             self._track_order(f)
 
         nudged = self._maybe_nudge(snapshot)
         eps_msgs = self._epsilon_report(snapshot)
         kicked = self._timeout_cancel(int(snapshot.get("now_ts") or time.time()*1000))
+
+        try:
+            if nudged:
+                get_exec_quality().ingest_nudges(len(nudged), int(snapshot.get("now_ts") or 0))
+        except Exception:
+            pass
+
         return {
             "fills_saved": len(fills),
             "slip_warns": slip_msgs,

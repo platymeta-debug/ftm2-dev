@@ -102,6 +102,14 @@ except Exception:  # pragma: no cover
     from trade.guard import PositionGuard, GuardConfig  # type: ignore
     from core.config import load_guard_cfg  # type: ignore
 
+try:
+    from ftm2.metrics.exec_quality import get_exec_quality, ExecQConfig
+    from ftm2.core.config import load_execq_cfg
+except Exception:  # pragma: no cover
+    from metrics.exec_quality import get_exec_quality, ExecQConfig  # type: ignore
+    from core.config import load_execq_cfg  # type: ignore
+
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -204,6 +212,14 @@ class Orchestrator:
                 trail_width_pct=gcv.trail_width_pct,
             ),
         )
+
+        eqv = load_execq_cfg(self.db)
+        self.execq = get_exec_quality(ExecQConfig(
+            window_sec=int(eqv.window_sec),
+            alert_p90_bps=float(eqv.alert_p90_bps),
+            min_fills=int(eqv.min_fills),
+            report_sec=int(eqv.report_sec),
+        ))
 
 
 
@@ -381,6 +397,25 @@ class Orchestrator:
             except Exception as e:
                 log.warning('[OO_CFG_RELOAD] 실패: %s', e)
             try:
+                new_eqv = load_execq_cfg(self.db)
+                cur = self.execq.cfg
+                if (
+                    cur.window_sec != new_eqv.window_sec or
+                    cur.alert_p90_bps != new_eqv.alert_p90_bps or
+                    cur.min_fills != new_eqv.min_fills or
+                    cur.report_sec != new_eqv.report_sec
+                ):
+                    self.execq.cfg = ExecQConfig(
+                        window_sec=new_eqv.window_sec,
+                        alert_p90_bps=new_eqv.alert_p90_bps,
+                        min_fills=new_eqv.min_fills,
+                        report_sec=new_eqv.report_sec,
+                    )
+                    log.info('[EQ_CFG_RELOAD] 적용: %s', self.execq.cfg)
+            except Exception as e:
+                log.warning('[EQ_CFG_RELOAD] 실패: %s', e)
+            try:
+
                 new_gcv = load_guard_cfg(self.db)
                 cur = self.guard.cfg
                 if (
@@ -578,6 +613,41 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _execq_loop(self) -> None:
+        """
+        롤링 윈도우 실행 품질을 주기 보고하고 임계 초과 시 알림.
+        """
+        from ftm2.discord_bot.notify import enqueue_alert as _alert
+        while not self._stop.is_set():
+            try:
+                s = self.execq.summary()
+                try:
+                    self.bus.set_guard_state({**(self.bus.snapshot().get("guard") or {}), "exec_quality": s})
+                except Exception:
+                    pass
+                if s.get("samples", 0) >= self.execq.cfg.min_fills:
+                    p90 = float((s.get("slip_bps_overall") or {}).get("p90") or 0.0)
+                    msg = (
+                        f"📊 실행 품질 — 샘플 {s['samples']}개 / bps(avg={s['slip_bps_overall']['avg']:.2f}, "
+                        f"p50={s['slip_bps_overall']['p50']:.2f}, p90={p90:.2f}) / 넛지 {s['nudges']} / 취소 {s['cancels']}"
+                    )
+                    try:
+                        self.db.record_event("INFO", "exec_quality", msg)
+                    except Exception:
+                        pass
+                    if p90 >= self.execq.cfg.alert_p90_bps:
+                        try:
+                            _alert(
+                                f"🚨 실행 슬리피지 경보 — p90={p90:.1f}bps (임계 {self.execq.cfg.alert_p90_bps:.1f}bps 초과)",
+                                intent="logs",
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                log.warning("[EQ] loop err: %s", e)
+            time.sleep(max(2.0, float(self.execq.cfg.report_sec)))
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -617,7 +687,7 @@ class Orchestrator:
         t = threading.Thread(target=self._reconcile_loop, name="reconcile", daemon=True)
         t.start()
         self._threads.append(t)
-
+        
         # 오픈오더 루프 시작
         t = threading.Thread(target=self._oo_loop, name="open-orders", daemon=True)
         t.start()
@@ -625,6 +695,11 @@ class Orchestrator:
 
         # 가드 루프 시작
         t = threading.Thread(target=self._guard_loop, name="guard", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 실행 품질 루프 시작
+        t = threading.Thread(target=self._execq_loop, name="exec-quality", daemon=True)
         t.start()
         self._threads.append(t)
 

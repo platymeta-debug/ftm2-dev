@@ -13,10 +13,13 @@ try:
     from ftm2.exchange.binance import BinanceClient
     from ftm2.core.state import StateBus
     from ftm2.trade.router import OrderRouter
+    from ftm2.metrics.exec_quality import get_exec_quality
 except Exception:  # pragma: no cover
     from exchange.binance import BinanceClient  # type: ignore
     from core.state import StateBus  # type: ignore
     from trade.router import OrderRouter  # type: ignore
+    from metrics.exec_quality import get_exec_quality  # type: ignore
+
 
 log = logging.getLogger("ftm2.openorders")
 if not log.handlers:
@@ -92,6 +95,12 @@ class OpenOrdersManager:
         else:
             log.warning("[OO][CANCEL] 실패 %s oid=%s err=%s", sym, order_id, r.get("error"))
         results.append({"symbol": sym, "orderId": order_id, "reason": reason, "ok": r.get("ok")})
+
+        try:
+            get_exec_quality().ingest_cancels(1)
+        except Exception:
+            pass
+
 
     # ---- 메인 ----
     def poll_once(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:

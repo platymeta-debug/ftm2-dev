@@ -362,3 +362,49 @@ def load_guard_cfg(cfg_db) -> _GuardCfgView:
         trail_width_pct=f(gdb("guard.trail_width_pct") or genv("GUARD_TRAIL_WIDTH_PCT"), 0.6),
     )
 
+
+
+@dataclass
+class _ExecQCfgView:
+    window_sec: int
+    alert_p90_bps: float
+    min_fills: int
+    report_sec: int
+
+
+def load_execq_cfg(cfg_db) -> _ExecQCfgView:
+    """
+    ENV: EQ_WINDOW_SEC, EQ_ALERT_P90_BPS, EQ_MIN_FILLS, EQ_REPORT_SEC
+    DB : eq.window_sec, eq.alert_p90_bps, eq.min_fills, eq.report_sec
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    return _ExecQCfgView(
+        window_sec=i(gdb("eq.window_sec") or genv("EQ_WINDOW_SEC"), 600),
+        alert_p90_bps=f(gdb("eq.alert_p90_bps") or genv("EQ_ALERT_P90_BPS"), 8.0),
+        min_fills=i(gdb("eq.min_fills") or genv("EQ_MIN_FILLS"), 5),
+        report_sec=i(gdb("eq.report_sec") or genv("EQ_REPORT_SEC"), 30),
+    )
+

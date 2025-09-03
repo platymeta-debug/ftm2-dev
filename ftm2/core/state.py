@@ -29,6 +29,7 @@ class StateBus:
         self._fills = deque(maxlen=1000)   # 체결 이벤트 큐
         self._open_orders: Dict[str, List[Dict[str, Any]]] = {}   # 심볼 → 오더 리스트
         self._guard: Dict[str, Any] = {}
+
         self._boot_ts = int(time.time() * 1000)
 
     # --- updates
