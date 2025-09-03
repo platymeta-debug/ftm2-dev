@@ -79,6 +79,14 @@ except Exception:  # pragma: no cover
     from trade.router import OrderRouter, ExecConfig  # type: ignore
     from core.config import load_exec_cfg  # type: ignore
 
+try:
+    from ftm2.trade.reconcile import Reconciler, ProtectConfig
+    from ftm2.core.config import load_protect_cfg
+except Exception:  # pragma: no cover
+    from trade.reconcile import Reconciler, ProtectConfig  # type: ignore
+    from core.config import load_protect_cfg  # type: ignore
+
+
 
 
 log = logging.getLogger("ftm2.orch")
@@ -140,6 +148,18 @@ class Orchestrator:
                 reduce_only=exv.reduce_only,
             ),
         )
+
+        pcv = load_protect_cfg(self.db)
+        self.reconciler = Reconciler(
+            self.bus, self.db, self.exec_router,
+            ProtectConfig(
+                slip_warn_pct=pcv.slip_warn_pct,
+                slip_max_pct=pcv.slip_max_pct,
+                stale_rel=pcv.stale_rel,
+                stale_secs=pcv.stale_secs,
+            ),
+        )
+
 
 
         self._stop = threading.Event()
@@ -264,6 +284,25 @@ class Orchestrator:
                     log.info("[EXEC_CFG_RELOAD] 적용: %s", self.exec_router.cfg)
             except Exception as e:
                 log.warning("[EXEC_CFG_RELOAD] 실패: %s", e)
+
+            try:
+                new_pcv = load_protect_cfg(self.db)
+                rc = self.reconciler.cfg
+                if (
+                    rc.slip_warn_pct != new_pcv.slip_warn_pct
+                    or rc.slip_max_pct != new_pcv.slip_max_pct
+                    or rc.stale_rel != new_pcv.stale_rel
+                    or rc.stale_secs != new_pcv.stale_secs
+                ):
+                    self.reconciler.cfg = ProtectConfig(
+                        slip_warn_pct=new_pcv.slip_warn_pct,
+                        slip_max_pct=new_pcv.slip_max_pct,
+                        stale_rel=new_pcv.stale_rel,
+                        stale_secs=new_pcv.stale_secs,
+                    )
+                    log.info("[PROTECT_CFG_RELOAD] 적용: %s", self.reconciler.cfg)
+            except Exception as e:
+                log.warning("[PROTECT_CFG_RELOAD] 실패: %s", e)
             time.sleep(period_s)
 
 
@@ -385,6 +424,24 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _reconcile_loop(self, period_s: float = 0.5) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                res = self.reconciler.process(snap)
+                if res.get("fills_saved"):
+                    log.info(
+                        "[RECON] fills_saved=%s slip_warns=%d nudges=%d",
+                        res["fills_saved"],
+                        len(res.get("slip_warns", [])),
+                        len(res.get("nudges", [])),
+                    )
+            except Exception as e:
+                log.warning("[RECON] loop err: %s", e)
+            time.sleep(period_s)
+
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -417,6 +474,11 @@ class Orchestrator:
 
         # 실행 루프 시작
         t = threading.Thread(target=self._exec_loop, name="exec", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 리컨실 루프 시작
+        t = threading.Thread(target=self._reconcile_loop, name="reconcile", daemon=True)
         t.start()
         self._threads.append(t)
 

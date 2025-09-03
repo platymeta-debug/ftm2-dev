@@ -205,3 +205,43 @@ def load_exec_cfg(cfg_db) -> _ExecCfgView:
         reduce_only=_as_bool(RO, True),
     )
 
+
+@dataclass
+class _ProtectCfgView:
+    slip_warn_pct: float
+    slip_max_pct: float
+    stale_rel: float
+    stale_secs: float
+
+
+def load_protect_cfg(cfg_db) -> _ProtectCfgView:
+    """
+    ENV: PROT_SLIP_WARN_PCT, PROT_SLIP_MAX_PCT, PROT_STALE_REL, PROT_STALE_SECS
+    DB : protect.slip_warn_pct, protect.slip_max_pct, protect.stale_rel, protect.stale_secs
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    return _ProtectCfgView(
+        slip_warn_pct=f(gdb("protect.slip_warn_pct") or genv("PROT_SLIP_WARN_PCT"), 0.003),
+        slip_max_pct=f(gdb("protect.slip_max_pct") or genv("PROT_SLIP_MAX_PCT"), 0.008),
+        stale_rel=f(gdb("protect.stale_rel") or genv("PROT_STALE_REL"), 0.5),
+        stale_secs=f(gdb("protect.stale_secs") or genv("PROT_STALE_SECS"), 20.0),
+    )
+
+

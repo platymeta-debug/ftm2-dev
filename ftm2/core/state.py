@@ -9,7 +9,9 @@
 from __future__ import annotations
 import threading
 import time
-from typing import Dict, Tuple, Any
+from collections import deque
+from typing import Dict, Tuple, Any, List
+
 
 # [ANCHOR:STATE_BUS]
 class StateBus:
@@ -24,6 +26,7 @@ class StateBus:
         self._forecasts: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._targets: Dict[str, Dict[str, Any]] = {}
         self._risk: Dict[str, Any] = {}
+        self._fills = deque(maxlen=1000)   # 체결 이벤트 큐
 
         self._boot_ts = int(time.time() * 1000)
 
@@ -63,6 +66,18 @@ class StateBus:
     def set_risk_state(self, state: Dict[str, Any]) -> None:
         with self._lock:
             self._risk = dict(state)
+
+    # --- NEW: fills ---
+    def push_fill(self, fill: Dict[str, Any]) -> None:
+        with self._lock:
+            self._fills.append(dict(fill))
+
+    def drain_fills(self, max_n: int = 200) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            for _ in range(min(max_n, len(self._fills))):
+                out.append(self._fills.popleft())
+        return out
 
 
     # --- reads

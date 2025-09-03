@@ -191,3 +191,12 @@ class OrderRouter:
                 "mode": mode, "result": r
             })
         return results
+
+    def last_sent_ms(self, sym: str) -> Optional[int]:
+        """해당 심볼의 마지막 주문(또는 드라이런 전송) 시각(ms)"""
+        return self._last_sent_ms.get(sym)
+
+    def nudge(self, sym: str) -> None:
+        """쿨다운을 즉시 해제해 다음 루프에서 바로 재시도 가능하게 함"""
+        self._last_sent_ms[sym] = 0
+

@@ -44,3 +44,13 @@ def test_state_bus_snapshot():
     assert snap["risk"]["equity"] == 1000
     assert isinstance(snap["boot_ts"], int)
     assert isinstance(snap["now_ts"], int)
+
+
+def test_state_bus_fills_queue():
+    bus = StateBus()
+    bus.push_fill({"symbol": "BTCUSDT", "side": "BUY"})
+    bus.push_fill({"symbol": "ETHUSDT", "side": "SELL"})
+    out = bus.drain_fills()
+    assert len(out) == 2
+    assert out[0]["symbol"] == "BTCUSDT"
+    assert bus.drain_fills() == []
