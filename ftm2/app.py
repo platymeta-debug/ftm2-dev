@@ -122,6 +122,7 @@ except Exception:  # pragma: no cover
 
 
 
+
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -249,6 +250,7 @@ class Orchestrator:
             to_discord=kcv.to_discord,
             only_on_change=kcv.only_on_change,
         ))
+
 
 
 
@@ -763,6 +765,7 @@ class Orchestrator:
             except Exception as e:
                 log.warning("[KPI] loop err: %s", e)
             time.sleep(max(3.0, float(self.kpi.cfg.report_sec)))
+
 
 
     def start(self) -> None:

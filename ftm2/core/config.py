@@ -477,3 +477,4 @@ def load_kpi_cfg(cfg_db) -> _KPICfgView:
         to_discord=b(gdb("kpi.to_discord") or genv("KPI_TO_DISCORD"),   True),
         only_on_change=b(gdb("kpi.only_on_change") or genv("KPI_ONLY_ON_CHANGE"), True),
     )
+
