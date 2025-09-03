@@ -19,10 +19,12 @@ from ftm2.core.env import load_env_chain
 from ftm2.core.state import StateBus
 from ftm2.exchange.binance import BinanceClient
 from ftm2.data.streams import StreamManager
+
 try:
     from ftm2.discord_bot.bot import run_discord_bot
 except Exception:  # pragma: no cover
     from discord_bot.bot import run_discord_bot  # type: ignore
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -40,6 +42,7 @@ class Orchestrator:
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
+
 
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
@@ -72,15 +75,18 @@ class Orchestrator:
         # WS 스트림 시작
         self.streams.start()
 
+
         # 하트비트 스레드
         t = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
         t.start()
         self._threads.append(t)
 
+
         # Discord 봇 (토큰 없으면 내부에서 자동 비활성 로그 후 종료)
         dt = threading.Thread(target=run_discord_bot, args=(self.bus,), name="discord-bot", daemon=True)
         dt.start()
         self._threads.append(dt)
+
 
         # 시그널 핸들
         try:
@@ -113,6 +119,7 @@ class Orchestrator:
             self.streams.stop()
         except Exception:
             pass
+
         for t in list(self._threads):
             if t.is_alive():
                 t.join(timeout=2.0)
