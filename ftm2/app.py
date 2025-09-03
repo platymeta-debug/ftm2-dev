@@ -72,6 +72,13 @@ except Exception:  # pragma: no cover
     from trade.risk import RiskEngine, RiskConfig  # type: ignore
     from core.config import load_forecast_cfg, load_risk_cfg  # type: ignore
 
+try:
+    from ftm2.trade.router import OrderRouter, ExecConfig
+    from ftm2.core.config import load_exec_cfg
+except Exception:  # pragma: no cover
+    from trade.router import OrderRouter, ExecConfig  # type: ignore
+    from core.config import load_exec_cfg  # type: ignore
+
 
 
 log = logging.getLogger("ftm2.orch")
@@ -118,6 +125,19 @@ class Orchestrator:
                 atr_k=rcfg_view.atr_k,
                 min_notional=rcfg_view.min_notional,
                 equity_override=rcfg_view.equity_override,
+            ),
+        )
+
+        exv = load_exec_cfg(self.db)
+        self.exec_router = OrderRouter(
+            self.cli,
+            ExecConfig(
+                active=exv.active,
+                cooldown_s=exv.cooldown_s,
+                tol_rel=exv.tol_rel,
+                tol_abs=exv.tol_abs,
+                order_type=exv.order_type,
+                reduce_only=exv.reduce_only,
             ),
         )
 
@@ -221,6 +241,29 @@ class Orchestrator:
                     log.info("[RISK_CFG_RELOAD] 적용: %s", self.risk.cfg)
             except Exception as e:
                 log.warning("[RISK_CFG_RELOAD] 실패: %s", e)
+
+            try:
+                new_exec = load_exec_cfg(self.db)
+                cur = self.exec_router.cfg
+                if (
+                    cur.active != new_exec.active
+                    or cur.cooldown_s != new_exec.cooldown_s
+                    or cur.tol_rel != new_exec.tol_rel
+                    or cur.tol_abs != new_exec.tol_abs
+                    or cur.order_type != new_exec.order_type
+                    or cur.reduce_only != new_exec.reduce_only
+                ):
+                    self.exec_router.cfg = ExecConfig(
+                        active=new_exec.active,
+                        cooldown_s=new_exec.cooldown_s,
+                        tol_rel=new_exec.tol_rel,
+                        tol_abs=new_exec.tol_abs,
+                        order_type=new_exec.order_type,
+                        reduce_only=new_exec.reduce_only,
+                    )
+                    log.info("[EXEC_CFG_RELOAD] 적용: %s", self.exec_router.cfg)
+            except Exception as e:
+                log.warning("[EXEC_CFG_RELOAD] 실패: %s", e)
             time.sleep(period_s)
 
 
@@ -319,6 +362,29 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _exec_loop(self, period_s: float = 1.0) -> None:
+        """
+        RiskEngine이 계산한 targets를 소비하여 주문(또는 드라이런)을 수행.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                res = self.exec_router.sync(snap)
+                for r in res:
+                    msg = (
+                        f"{r['mode']} {r['symbol']} {r['side']} Δ={r['delta_qty']:.6f} "
+                        f"qty={r['qty_sent']:.6f} {r['reason']}"
+                    )
+                    log.info("[EXEC] %s", msg)
+                    try:
+                        self.db.record_event("INFO", "exec", msg)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.warning("[EXEC_ERR] %s", e)
+            time.sleep(period_s)
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -346,6 +412,11 @@ class Orchestrator:
 
         # 리스크 루프 시작
         t = threading.Thread(target=self._risk_loop, name="risk", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 실행 루프 시작
+        t = threading.Thread(target=self._exec_loop, name="exec", daemon=True)
         t.start()
         self._threads.append(t)
 

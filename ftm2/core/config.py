@@ -144,3 +144,64 @@ def load_risk_cfg(cfg_db) -> _RiskCfgView:
         equity_override=eo_f,
     )
 
+
+@dataclass
+class _ExecCfgView:
+    active: bool
+    cooldown_s: float
+    tol_rel: float
+    tol_abs: float
+    order_type: str
+    reduce_only: bool
+
+
+def _get_db_val(cfg_db, key: str) -> Optional[str]:
+    try:
+        return cfg_db.get_config(key)
+    except Exception:
+        return None
+
+
+def _get_env_val(key: str) -> Optional[str]:
+    import os
+    v = os.getenv(key)
+    return v if v not in (None, "") else None
+
+
+def _as_bool(v: Optional[str], default: bool) -> bool:
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _as_float(v: Optional[str], default: float) -> float:
+    try:
+        return float(v) if v is not None else default
+    except Exception:
+        return default
+
+
+def load_exec_cfg(cfg_db) -> _ExecCfgView:
+    """
+    ENV:
+      EXEC_ACTIVE, EXEC_COOLDOWN_S, EXEC_TOL_REL, EXEC_TOL_ABS, EXEC_ORDER_TYPE, EXEC_REDUCE_ONLY
+    DB:
+      exec.active, exec.cooldown_s, exec.tol_rel, exec.tol_abs, exec.order_type, exec.reduce_only
+    """
+
+    A = _get_db_val(cfg_db, "exec.active") or _get_env_val("EXEC_ACTIVE")
+    CD = _get_db_val(cfg_db, "exec.cooldown_s") or _get_env_val("EXEC_COOLDOWN_S")
+    TR = _get_db_val(cfg_db, "exec.tol_rel") or _get_env_val("EXEC_TOL_REL")
+    TA = _get_db_val(cfg_db, "exec.tol_abs") or _get_env_val("EXEC_TOL_ABS")
+    OT = _get_db_val(cfg_db, "exec.order_type") or _get_env_val("EXEC_ORDER_TYPE")
+    RO = _get_db_val(cfg_db, "exec.reduce_only") or _get_env_val("EXEC_REDUCE_ONLY")
+
+    return _ExecCfgView(
+        active=_as_bool(A, False),
+        cooldown_s=_as_float(CD, 5.0),
+        tol_rel=_as_float(TR, 0.05),
+        tol_abs=_as_float(TA, 0.0),
+        order_type=(OT or "MARKET"),
+        reduce_only=_as_bool(RO, True),
+    )
+
