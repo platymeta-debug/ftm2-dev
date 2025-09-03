@@ -88,6 +88,14 @@ except Exception:  # pragma: no cover
 
 
 
+try:
+    from ftm2.trade.open_orders import OpenOrdersManager, OOConfig
+    from ftm2.core.config import load_open_orders_cfg
+except Exception:  # pragma: no cover
+    from trade.open_orders import OpenOrdersManager, OOConfig  # type: ignore
+    from core.config import load_open_orders_cfg  # type: ignore
+
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -163,6 +171,20 @@ class Orchestrator:
                 cancel_on_stale=pcv.cancel_on_stale,
             ),
         )
+
+        oov = load_open_orders_cfg(self.db)
+        self.oo_mgr = OpenOrdersManager(
+            self.cli, self.bus, self.exec_router,
+            OOConfig(
+                enabled=oov.enabled,
+                poll_s=oov.poll_s,
+                stale_secs=oov.stale_secs,
+                price_drift_pct=oov.price_drift_pct,
+                cancel_on_day_cut=oov.cancel_on_day_cut,
+                max_open_per_sym=oov.max_open_per_sym,
+            ),
+        )
+
 
 
 
@@ -317,6 +339,28 @@ class Orchestrator:
                     log.info("[PROTECT_CFG_RELOAD] 적용: %s", self.reconciler.cfg)
             except Exception as e:
                 log.warning("[PROTECT_CFG_RELOAD] 실패: %s", e)
+
+            try:
+                new_oov = load_open_orders_cfg(self.db)
+                cur = self.oo_mgr.cfg
+                if (cur.enabled != new_oov.enabled or
+                    cur.poll_s != new_oov.poll_s or
+                    cur.stale_secs != new_oov.stale_secs or
+                    cur.price_drift_pct != new_oov.price_drift_pct or
+                    cur.cancel_on_day_cut != new_oov.cancel_on_day_cut or
+                    cur.max_open_per_sym != new_oov.max_open_per_sym):
+                    self.oo_mgr.cfg = OOConfig(
+                        enabled=new_oov.enabled,
+                        poll_s=new_oov.poll_s,
+                        stale_secs=new_oov.stale_secs,
+                        price_drift_pct=new_oov.price_drift_pct,
+                        cancel_on_day_cut=new_oov.cancel_on_day_cut,
+                        max_open_per_sym=new_oov.max_open_per_sym,
+                    )
+                    log.info('[OO_CFG_RELOAD] 적용: %s', self.oo_mgr.cfg)
+            except Exception as e:
+                log.warning('[OO_CFG_RELOAD] 실패: %s', e)
+
             time.sleep(period_s)
 
 
@@ -456,6 +500,24 @@ class Orchestrator:
 
 
 
+    def _oo_loop(self) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                res = self.oo_mgr.poll_once(snap)
+                if res.get('cancelled'):
+                    for c in res['cancelled']:
+                        msg = '🧹 오더 취소 — {symbol} oid={orderId} ({reason})'.format(**c)
+                        log.info('[OO] %s', msg)
+                        try:
+                            self.db.record_event('INFO', 'open_orders', msg)
+                        except Exception:
+                            pass
+            except Exception as e:
+                log.warning('[OO] loop err: %s', e)
+            time.sleep(max(0.5, float(self.oo_mgr.cfg.poll_s)))
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -493,6 +555,11 @@ class Orchestrator:
 
         # 리컨실 루프 시작
         t = threading.Thread(target=self._reconcile_loop, name="reconcile", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 오픈오더 루프 시작
+        t = threading.Thread(target=self._oo_loop, name="open-orders", daemon=True)
         t.start()
         self._threads.append(t)
 

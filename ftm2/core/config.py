@@ -263,3 +263,51 @@ def load_protect_cfg(cfg_db) -> _ProtectCfgView:
     )
 
 
+
+@dataclass
+class _OOCfgView:
+    enabled: bool
+    poll_s: float
+    stale_secs: float
+    price_drift_pct: float
+    cancel_on_day_cut: bool
+    max_open_per_sym: int
+
+
+def load_open_orders_cfg(cfg_db) -> _OOCfgView:
+    """
+    ENV: OO_ENABLED, OO_POLL_S, OO_STALE_SECS, OO_PRICE_DRIFT_PCT, OO_CANCEL_ON_DAY_CUT, OO_MAX_OPEN_PER_SYM
+    DB : oo.enabled, oo.poll_s, oo.stale_secs, oo.price_drift_pct, oo.cancel_on_day_cut, oo.max_open_per_sym
+    """
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+    return _OOCfgView(
+        enabled=b(gdb("oo.enabled") or genv("OO_ENABLED"), True),
+        poll_s=f(gdb("oo.poll_s") or genv("OO_POLL_S"), 3.0),
+        stale_secs=f(gdb("oo.stale_secs") or genv("OO_STALE_SECS"), 45.0),
+        price_drift_pct=f(gdb("oo.price_drift_pct") or genv("OO_PRICE_DRIFT_PCT"), 0.004),
+        cancel_on_day_cut=b(gdb("oo.cancel_on_day_cut") or genv("OO_CANCEL_ON_DAY_CUT"), True),
+        max_open_per_sym=i(gdb("oo.max_open_per_sym") or genv("OO_MAX_OPEN_PER_SYM"), 2),
+    )
+
