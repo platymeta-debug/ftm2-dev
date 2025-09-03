@@ -6,6 +6,8 @@ ENV/DB 설정 로더
 from __future__ import annotations
 import os
 from typing import Dict, Tuple, Optional
+from dataclasses import dataclass
+
 
 try:
     from ftm2.signal.forecast import ForecastConfig
@@ -86,3 +88,59 @@ def load_forecast_cfg(cfg_db) -> ForecastConfig:
         },
     )
     return cfg
+
+
+
+@dataclass
+class _RiskCfgView:
+    risk_target_pct: float
+    corr_cap_per_side: float
+    day_max_loss_pct: float
+    atr_k: float
+    min_notional: float
+    equity_override: Optional[float]
+
+
+def load_risk_cfg(cfg_db) -> _RiskCfgView:
+    """
+    ENV 키:
+      RISK_TARGET_PCT, CORR_CAP_PER_SIDE, DAILY_MAX_LOSS_PCT, RISK_ATR_K,
+      RISK_MIN_NOTIONAL, RISK_EQUITY_OVERRIDE
+    DB 키:
+      risk.target_pct, risk.corr_cap_per_side, risk.day_max_loss_pct,
+      risk.atr_k, risk.min_notional, risk.equity_override
+    """
+
+    def g_db(k: str) -> Optional[str]:
+        try:
+            return cfg_db.get_config(k)
+        except Exception:  # pragma: no cover - db access failures
+            return None
+
+    def g_env(k: str) -> Optional[str]:
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def f(v: Optional[str], d: float) -> float:
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    rt = f(g_db("risk.target_pct") or g_env("RISK_TARGET_PCT"), 0.30)
+    cc = f(g_db("risk.corr_cap_per_side") or g_env("CORR_CAP_PER_SIDE"), 0.65)
+    dl = f(g_db("risk.day_max_loss_pct") or g_env("DAILY_MAX_LOSS_PCT"), 3.0)
+    ak = f(g_db("risk.atr_k") or g_env("RISK_ATR_K"), 2.0)
+    mn = f(g_db("risk.min_notional") or g_env("RISK_MIN_NOTIONAL"), 20.0)
+    eo = g_db("risk.equity_override") or g_env("RISK_EQUITY_OVERRIDE")
+    eo_f = float(eo) if eo not in (None, "") else None
+
+    return _RiskCfgView(
+        risk_target_pct=rt,
+        corr_cap_per_side=cc,
+        day_max_loss_pct=dl,
+        atr_k=ak,
+        min_notional=mn,
+        equity_override=eo_f,
+    )
+

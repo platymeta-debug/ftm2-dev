@@ -66,9 +66,11 @@ except Exception:  # pragma: no cover
     from signal.forecast import ForecastEnsemble, ForecastConfig  # type: ignore
 
 try:
-    from ftm2.core.config import load_forecast_cfg
+    from ftm2.trade.risk import RiskEngine, RiskConfig
+    from ftm2.core.config import load_forecast_cfg, load_risk_cfg
 except Exception:  # pragma: no cover
-    from core.config import load_forecast_cfg  # type: ignore
+    from trade.risk import RiskEngine, RiskConfig  # type: ignore
+    from core.config import load_forecast_cfg, load_risk_cfg  # type: ignore
 
 
 
@@ -105,6 +107,19 @@ class Orchestrator:
         )
         init_cfg = load_forecast_cfg(self.db)
         self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, init_cfg)
+
+        rcfg_view = load_risk_cfg(self.db)
+        self.risk = RiskEngine(
+            self.symbols,
+            RiskConfig(
+                risk_target_pct=rcfg_view.risk_target_pct,
+                corr_cap_per_side=rcfg_view.corr_cap_per_side,
+                day_max_loss_pct=rcfg_view.day_max_loss_pct,
+                atr_k=rcfg_view.atr_k,
+                min_notional=rcfg_view.min_notional,
+                equity_override=rcfg_view.equity_override,
+            ),
+        )
 
 
         self._stop = threading.Event()
@@ -183,6 +198,29 @@ class Orchestrator:
                     log.info("[FORECAST_CFG_RELOAD] 가중치/임계 업데이트 적용: %s", new_cfg)
             except Exception as e:
                 log.warning("[FORECAST_CFG_RELOAD] 실패: %s", e)
+
+            try:
+                new_risk_view = load_risk_cfg(self.db)
+                cur = self.risk.cfg
+                if (
+                    cur.risk_target_pct != new_risk_view.risk_target_pct
+                    or cur.corr_cap_per_side != new_risk_view.corr_cap_per_side
+                    or cur.day_max_loss_pct != new_risk_view.day_max_loss_pct
+                    or cur.atr_k != new_risk_view.atr_k
+                    or cur.min_notional != new_risk_view.min_notional
+                    or cur.equity_override != new_risk_view.equity_override
+                ):
+                    self.risk.cfg = RiskConfig(
+                        risk_target_pct=new_risk_view.risk_target_pct,
+                        corr_cap_per_side=new_risk_view.corr_cap_per_side,
+                        day_max_loss_pct=new_risk_view.day_max_loss_pct,
+                        atr_k=new_risk_view.atr_k,
+                        min_notional=new_risk_view.min_notional,
+                        equity_override=new_risk_view.equity_override,
+                    )
+                    log.info("[RISK_CFG_RELOAD] 적용: %s", self.risk.cfg)
+            except Exception as e:
+                log.warning("[RISK_CFG_RELOAD] 실패: %s", e)
             time.sleep(period_s)
 
 
@@ -217,6 +255,70 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _risk_loop(self, period_s: float = 0.5) -> None:
+        """
+        예측/피처/마크를 바탕으로 목표 포지션을 산출하고 버스/DB/알림을 갱신.
+        """
+        day_cut_sent = None
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            targets = self.risk.process_snapshot(snap)
+
+            eq = 0.0
+            try:
+                eq = float(self.risk._equity(snap))
+            except Exception:
+                pass
+            long_used = sum(t["target_notional"] for t in targets if t["target_qty"] > 0.0)
+            short_used = sum(t["target_notional"] for t in targets if t["target_qty"] < 0.0)
+
+            mapping = {t["symbol"]: t for t in targets}
+            self.bus.set_targets(mapping)
+            self.bus.set_risk_state({
+                "equity": eq,
+                "day_pnl_pct": self.risk._day_pnl_pct(snap),
+                "day_cut": self.risk.day_cut_on,
+                "used_long_ratio": (long_used / eq) if eq > 0 else 0.0,
+                "used_short_ratio": (short_used / eq) if eq > 0 else 0.0,
+                "corr_cap_per_side": self.risk.cfg.corr_cap_per_side,
+            })
+
+            for t in targets:
+                log.info(
+                    "[RISK] %s side=%s qty=%.6f notional=%.2f reason=%s",
+                    t["symbol"],
+                    t["side"],
+                    t["target_qty"],
+                    t["target_notional"],
+                    t["reason"],
+                )
+                try:
+                    self.db.record_event(
+                        "INFO",
+                        "risk",
+                        f"{t['symbol']} {t['side']} qty={t['target_qty']:.6f} notional={t['target_notional']:.2f} {t['reason']}",
+                    )
+                except Exception:
+                    pass
+
+            if self.risk.day_cut_on and day_cut_sent is not True:
+                msg = (
+                    f"🛑 데일리컷 발동: 당일 손실률 ≤ -{self.risk.cfg.day_max_loss_pct:.2f}% — 모든 타깃 0으로 설정"
+                )
+                log.warning("[DAY_CUT] on")
+                try:
+                    enqueue_alert(msg, intent="logs")
+                    self.db.record_event("WARN", "risk", "DAY_CUT_ON")
+                except Exception:
+                    pass
+                day_cut_sent = True
+            elif (not self.risk.day_cut_on) and day_cut_sent is not False:
+                log.info("[DAY_CUT] off")
+                day_cut_sent = False
+
+            time.sleep(period_s)
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -242,11 +344,15 @@ class Orchestrator:
         t.start()
         self._threads.append(t)
 
+        # 리스크 루프 시작
+        t = threading.Thread(target=self._risk_loop, name="risk", daemon=True)
+        t.start()
+        self._threads.append(t)
+
         # 설정 핫리로드
         t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
         t.start()
         self._threads.append(t)
-
 
         # 더미 전략 루프
         st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
