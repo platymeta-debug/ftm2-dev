@@ -44,4 +44,8 @@
 - feat(streams): 공개 데이터와 유저스트림 클라이언트 분리 주입 지원
 - feat(app): 하이브리드 결선(live 차트 + testnet 주문) 기본 시나리오 추가
 
+2025-09-19 v0.4.1
+- feat(strategy-adapter): 백테스트/리플레이에 실전 ForecastEnsemble 주입 가능하도록 어댑터 계층 추가(STRAT_MODE/CLASS/PARAMS)
+- feat(backtest): 러너가 어댑터를 통해 예측을 생성하도록 변경(스냅샷 호환 유지)
+
 

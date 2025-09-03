@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 from typing import Dict, Tuple, Optional
 from dataclasses import dataclass
+import json
 
 
 try:
@@ -89,6 +90,42 @@ def load_forecast_cfg(cfg_db) -> ForecastConfig:
     )
     return cfg
 
+
+@dataclass
+class _StrategyCfgView:
+    mode: str                 # dummy | ensemble | custom
+    class_path: Optional[str] # custom 시 필수
+    params: Optional[Dict]    # JSON 파라미터
+
+
+def load_strategy_cfg(cfg_db) -> _StrategyCfgView:
+    """
+    ENV: STRAT_MODE, STRAT_CLASS, STRAT_PARAMS(JSON)
+    DB : strat.mode, strat.class, strat.params
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k) if cfg_db else None
+        except Exception:
+            return None
+
+    def genv(k):
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    mode = (gdb("strat.mode") or genv("STRAT_MODE") or "dummy").lower()
+    cls = gdb("strat.class") or genv("STRAT_CLASS")
+    raw = gdb("strat.params") or genv("STRAT_PARAMS")
+    params = None
+    if raw:
+        try:
+            params = json.loads(raw)
+        except Exception:
+            params = None
+    if mode not in ("dummy", "ensemble", "custom"):
+        mode = "dummy"
+    return _StrategyCfgView(mode=mode, class_path=cls, params=params)
 
 
 @dataclass

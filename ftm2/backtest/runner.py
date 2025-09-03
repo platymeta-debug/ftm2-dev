@@ -18,6 +18,11 @@ try:
 except Exception:  # pragma: no cover
     from trade.risk import RiskEngine, RiskConfig  # type: ignore
 
+try:
+    from ftm2.strategy.adapter import create_adapter, StrategyAdapterBase
+except Exception:  # pragma: no cover
+    from strategy.adapter import create_adapter, StrategyAdapterBase  # type: ignore
+
 log = logging.getLogger("ftm2.bt")
 if not log.handlers:  # pragma: no cover - CLI 직행 시
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -38,6 +43,10 @@ class BacktestConfig:
     out_dir: str = "./reports"
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None
+    # NEW
+    strat_mode: str = "dummy"
+    strat_class: Optional[str] = None
+    strat_params: Optional[Dict[str, Any]] = None
 
 
 # ----------------------------
@@ -141,7 +150,7 @@ def _load_pattern_csv(pattern: str, symbols: List[str], start_ms: Optional[int],
 # 러너
 # ----------------------------
 class BacktestRunner:
-    def __init__(self, cfg: BacktestConfig) -> None:
+    def __init__(self, cfg: BacktestConfig, adapter: Optional[StrategyAdapterBase] = None) -> None:
         self.cfg = cfg
         # 상태
         self.positions: Dict[str, float] = {s: 0.0 for s in cfg.symbols}
@@ -158,6 +167,8 @@ class BacktestRunner:
 
         # 리스크 엔진
         self.risk = RiskEngine(cfg.symbols, RiskConfig())
+        # NEW: 전략 어댑터
+        self.adapter = adapter or create_adapter(cfg.strat_mode, cfg.strat_class, cfg.strat_params, db=None)
 
     # ---- 내부: 체결/수수료/슬리피지 ----
     def _apply_fill(self, ts: int, sym: str, delta_qty: float, ref_px: float) -> None:
@@ -250,7 +261,11 @@ class BacktestRunner:
                     for s in next_syms
                 },
                 "features": {
-                    (s, self.cfg.interval): {"atr14": (self.atr[s] or 0.0), "c": (data[s][idx[s] - 1]["c"] if idx[s] > 0 else 0.0)}
+                    (s, self.cfg.interval): {
+                        "atr14": (self.atr[s] or 0.0),
+                        "c": (data[s][idx[s] - 1]["c"] if idx[s] > 0 else 0.0),
+                        "c_prev": (self.prev_close[s] if self.prev_close[s] is not None else 0.0),
+                    }
                     for s in self.cfg.symbols
                 },
                 "forecasts": {},
@@ -259,9 +274,13 @@ class BacktestRunner:
                 "risk": {"day_pnl_pct": 0.0},
             }
 
-            for s in self.cfg.symbols:
-                stance, score = dummy_forecast(self.ret_src[s])
-                snapshot["forecasts"][(s, self.cfg.interval)] = {"stance": stance, "score": score}
+            # NEW: 어댑터 예측
+            fc_map = self.adapter.infer(snapshot, self.cfg.symbols, self.cfg.interval)
+            for s, rec in fc_map.items():
+                snapshot["forecasts"][(s, self.cfg.interval)] = {
+                    "stance": rec.get("stance", "FLAT"),
+                    "score": float(rec.get("score", 0.0)),
+                }
 
             targets = self.risk.process_snapshot(snapshot)
 
