@@ -14,3 +14,4 @@
 - feat(streams): add StreamManager for kline/markPrice/user streams and StateBus updates
 - feat(discord): add Korean-localized slash commands, dashboard auto-update, and control panel skeleton
 - feat(persistence): add SQLite skeleton with WAL, schema (trades/positions/pnl_daily/config/events/patches) and write helpers
+
