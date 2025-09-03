@@ -7,9 +7,11 @@ from __future__ import annotations
 import os, json, logging
 
 try:
-    from ftm2.core.config import load_backtest_cfg
+    from ftm2.core.config import load_backtest_cfg, load_strategy_cfg
+    from ftm2.strategy.adapter import create_adapter
 except Exception:  # pragma: no cover
-    from core.config import load_backtest_cfg  # type: ignore
+    from core.config import load_backtest_cfg, load_strategy_cfg  # type: ignore
+    from strategy.adapter import create_adapter  # type: ignore
 
 try:
     from ftm2.backtest.runner import BacktestRunner, BacktestConfig
@@ -23,7 +25,11 @@ if not log.handlers:  # pragma: no cover - direct run
 
 def main() -> None:
     cfgv = load_backtest_cfg(None)  # DB 미사용 시 None 허용
+    scv = load_strategy_cfg(None)
     syms = [s.strip().upper() for s in (cfgv.symbols or "").split(",") if s.strip()]
+
+    adapter = create_adapter(scv.mode, scv.class_path, scv.params, db=None)
+
     bt = BacktestRunner(
         BacktestConfig(
             input_path=cfgv.input_path,
@@ -36,7 +42,11 @@ def main() -> None:
             out_dir=cfgv.out_dir or "./reports",
             start_ms=cfgv.start_ms,
             end_ms=cfgv.end_ms,
-        )
+            strat_mode=scv.mode,
+            strat_class=scv.class_path,
+            strat_params=scv.params,
+        ),
+        adapter=adapter,
     )
     res = bt.run()
     print(json.dumps(res["summary"], ensure_ascii=False, indent=2))
