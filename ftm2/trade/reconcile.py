@@ -14,6 +14,7 @@ try:
     from ftm2.trade.router import OrderRouter
     from ftm2.discord_bot.notify import enqueue_alert
     from ftm2.metrics.exec_quality import get_exec_quality
+    from ftm2.metrics.order_ledger import get_order_ledger
 
 except Exception:  # pragma: no cover
     from core.persistence import Persistence            # type: ignore
@@ -21,6 +22,7 @@ except Exception:  # pragma: no cover
     from trade.router import OrderRouter                # type: ignore
     from discord_bot.notify import enqueue_alert        # type: ignore
     from metrics.exec_quality import get_exec_quality   # type: ignore
+    from metrics.order_ledger import get_order_ledger   # type: ignore
 
 
 log = logging.getLogger("ftm2.recon")
@@ -213,6 +215,12 @@ class Reconciler:
 
             # 주문 상태 추적
             self._track_order(f)
+
+            # Ledger 업데이트
+            try:
+                get_order_ledger(self.db).on_update(f)
+            except Exception:
+                pass
 
         nudged = self._maybe_nudge(snapshot)
         eps_msgs = self._epsilon_report(snapshot)
