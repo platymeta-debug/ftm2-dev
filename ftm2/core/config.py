@@ -311,3 +311,54 @@ def load_open_orders_cfg(cfg_db) -> _OOCfgView:
         max_open_per_sym=i(gdb("oo.max_open_per_sym") or genv("OO_MAX_OPEN_PER_SYM"), 2),
     )
 
+
+
+@dataclass
+class _GuardCfgView:
+    enabled: bool
+    max_lever_total: float
+    max_lever_per_sym: float
+    stop_pct: float
+    trail_activate_pct: float
+    trail_width_pct: float
+
+
+def load_guard_cfg(cfg_db) -> _GuardCfgView:
+    """
+    ENV: GUARD_ENABLED, GUARD_MAX_LEVER, GUARD_MAX_LEVER_PER_SYM, GUARD_STOP_PCT,
+         GUARD_TRAIL_ACTIVATE_PCT, GUARD_TRAIL_WIDTH_PCT
+    DB : guard.enabled, guard.max_lever, guard.max_lever_per_sym, guard.stop_pct,
+         guard.trail_activate_pct, guard.trail_width_pct
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    return _GuardCfgView(
+        enabled=b(gdb("guard.enabled") or genv("GUARD_ENABLED"), True),
+        max_lever_total=f(gdb("guard.max_lever") or genv("GUARD_MAX_LEVER"), 2.5),
+        max_lever_per_sym=f(gdb("guard.max_lever_per_sym") or genv("GUARD_MAX_LEVER_PER_SYM"), 0.8),
+        stop_pct=f(gdb("guard.stop_pct") or genv("GUARD_STOP_PCT"), 3.0),
+        trail_activate_pct=f(gdb("guard.trail_activate_pct") or genv("GUARD_TRAIL_ACTIVATE_PCT"), 1.0),
+        trail_width_pct=f(gdb("guard.trail_width_pct") or genv("GUARD_TRAIL_WIDTH_PCT"), 0.6),
+    )
+

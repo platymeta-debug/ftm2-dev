@@ -95,6 +95,12 @@ except Exception:  # pragma: no cover
     from trade.open_orders import OpenOrdersManager, OOConfig  # type: ignore
     from core.config import load_open_orders_cfg  # type: ignore
 
+try:
+    from ftm2.trade.guard import PositionGuard, GuardConfig
+    from ftm2.core.config import load_guard_cfg
+except Exception:  # pragma: no cover
+    from trade.guard import PositionGuard, GuardConfig  # type: ignore
+    from core.config import load_guard_cfg  # type: ignore
 
 
 log = logging.getLogger("ftm2.orch")
@@ -182,6 +188,20 @@ class Orchestrator:
                 price_drift_pct=oov.price_drift_pct,
                 cancel_on_day_cut=oov.cancel_on_day_cut,
                 max_open_per_sym=oov.max_open_per_sym,
+            ),
+        )
+
+
+        gcv = load_guard_cfg(self.db)
+        self.guard = PositionGuard(
+            self.bus, self.exec_router,
+            GuardConfig(
+                enabled=gcv.enabled,
+                max_lever_total=gcv.max_lever_total,
+                max_lever_per_sym=gcv.max_lever_per_sym,
+                stop_pct=gcv.stop_pct,
+                trail_activate_pct=gcv.trail_activate_pct,
+                trail_width_pct=gcv.trail_width_pct,
             ),
         )
 
@@ -360,6 +380,28 @@ class Orchestrator:
                     log.info('[OO_CFG_RELOAD] 적용: %s', self.oo_mgr.cfg)
             except Exception as e:
                 log.warning('[OO_CFG_RELOAD] 실패: %s', e)
+            try:
+                new_gcv = load_guard_cfg(self.db)
+                cur = self.guard.cfg
+                if (
+                    cur.enabled != new_gcv.enabled or
+                    cur.max_lever_total != new_gcv.max_lever_total or
+                    cur.max_lever_per_sym != new_gcv.max_lever_per_sym or
+                    cur.stop_pct != new_gcv.stop_pct or
+                    cur.trail_activate_pct != new_gcv.trail_activate_pct or
+                    cur.trail_width_pct != new_gcv.trail_width_pct
+                ):
+                    self.guard.cfg = GuardConfig(
+                        enabled=new_gcv.enabled,
+                        max_lever_total=new_gcv.max_lever_total,
+                        max_lever_per_sym=new_gcv.max_lever_per_sym,
+                        stop_pct=new_gcv.stop_pct,
+                        trail_activate_pct=new_gcv.trail_activate_pct,
+                        trail_width_pct=new_gcv.trail_width_pct,
+                    )
+                    log.info("[GUARD][CFG] 업데이트 적용: %s", self.guard.cfg)
+            except Exception as e:
+                log.warning("[GUARD][CFG] reload fail: %s", e)
 
             time.sleep(period_s)
 
@@ -518,6 +560,24 @@ class Orchestrator:
             time.sleep(max(0.5, float(self.oo_mgr.cfg.poll_s)))
 
 
+    def _guard_loop(self, period_s: float = 0.5) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                acts = self.guard.process(snap)
+                if acts:
+                    try:
+                        self.bus.set_guard_state({"last_actions": acts[-5:]})
+                    except Exception:
+                        pass
+                    for a in acts:
+                        msg = f"{a['action']} {a['symbol']} qty={a['qty']:.6f} reason={a['reason']}"
+                        self.db.record_event("WARN", "guard", msg)
+            except Exception as e:
+                log.warning("[GUARD] loop err: %s", e)
+            time.sleep(period_s)
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -560,6 +620,11 @@ class Orchestrator:
 
         # 오픈오더 루프 시작
         t = threading.Thread(target=self._oo_loop, name="open-orders", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 가드 루프 시작
+        t = threading.Thread(target=self._guard_loop, name="guard", daemon=True)
         t.start()
         self._threads.append(t)
 

@@ -28,8 +28,7 @@ class StateBus:
         self._risk: Dict[str, Any] = {}
         self._fills = deque(maxlen=1000)   # 체결 이벤트 큐
         self._open_orders: Dict[str, List[Dict[str, Any]]] = {}   # 심볼 → 오더 리스트
-
-
+        self._guard: Dict[str, Any] = {}
         self._boot_ts = int(time.time() * 1000)
 
     # --- updates
@@ -86,6 +85,12 @@ class StateBus:
             self._open_orders = {k: list(v) for k, v in (mapping or {}).items()}
 
 
+    def set_guard_state(self, state: Dict[str, Any]) -> None:
+        with self._lock:
+            self._guard = dict(state)
+
+
+
 
     # --- reads
     def snapshot(self) -> Dict[str, Any]:
@@ -101,6 +106,7 @@ class StateBus:
                 "targets": dict(self._targets),
                 "risk": dict(self._risk),
                 "open_orders": {k: list(v) for k, v in self._open_orders.items()},
+                "guard": dict(self._guard),
                 "boot_ts": self._boot_ts,
                 "now_ts": int(time.time() * 1000),
             }

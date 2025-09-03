@@ -33,6 +33,7 @@ def test_state_bus_snapshot():
     bus.set_targets({"BTCUSDT": {"target_qty": 1.0}})
     bus.set_risk_state({"equity": 1000})
     bus.set_open_orders({"BTCUSDT": [{"orderId": "1"}]})
+    bus.set_guard_state({"status": "ok"})
     snap = bus.snapshot()
     assert snap["marks"]["BTCUSDT"]["price"] == 100.0
     assert snap["klines"][("BTCUSDT", "1m")]["o"] == 1
@@ -44,6 +45,7 @@ def test_state_bus_snapshot():
     assert snap["targets"]["BTCUSDT"]["target_qty"] == 1.0
     assert snap["risk"]["equity"] == 1000
     assert snap["open_orders"]["BTCUSDT"][0]["orderId"] == "1"
+    assert snap["guard"]["status"] == "ok"
     assert isinstance(snap["boot_ts"], int)
     assert isinstance(snap["now_ts"], int)
 

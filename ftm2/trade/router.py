@@ -217,3 +217,36 @@ class OrderRouter:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+
+    def force_flat(self, symbol: str, qty: Optional[float] = None) -> dict:
+        """현재 포지션을 즉시 0으로 만들기 위한 reduceOnly MARKET.
+        qty 미지정 시 현재 포지션 절대값만큼 시도(스냅샷 필요하므로 지정 권장)."""
+        try:
+            if qty is None:
+                return {"ok": False, "error": "qty required in force_flat (router has no state)"}
+            qstr = f"{qty:.10f}".rstrip("0").rstrip(".")
+            payload_sell = {"symbol": symbol, "side": "SELL", "type": self.cfg.order_type, "quantity": qstr, "reduceOnly": True}
+            payload_buy = {"symbol": symbol, "side": "BUY", "type": self.cfg.order_type, "quantity": qstr, "reduceOnly": True}
+            if not self.cfg.active:
+                log.warning("[EXEC_DRY][FLAT] %s qty=%s", symbol, qstr)
+                return {"ok": True, "dry": True}
+            rs = self.cli.create_order(payload_sell)
+            rb = self.cli.create_order(payload_buy) if not rs.get("ok") else {"ok": True, "note": "sell-first-ok"}
+            return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def force_reduce_to(self, symbol: str, target_abs_qty: float) -> dict:
+        """현재 포지션 절대값을 target_abs_qty 이하로 줄이도록 reduceOnly MARKET을 전송."""
+        if target_abs_qty < 0.0:
+            target_abs_qty = 0.0
+        try:
+            if not self.cfg.active:
+                log.warning("[EXEC_DRY][REDUCE_TO] %s → |qty|<=%.10f", symbol, target_abs_qty)
+                return {"ok": True, "dry": True}
+            rs = self.cli.create_order({"symbol": symbol, "side": "SELL", "type": self.cfg.order_type, "quantity": "999999", "reduceOnly": True})
+            rb = self.cli.create_order({"symbol": symbol, "side": "BUY", "type": self.cfg.order_type, "quantity": "999999", "reduceOnly": True}) if not rs.get("ok") else {"ok": True}
+            return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
