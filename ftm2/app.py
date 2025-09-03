@@ -6,6 +6,18 @@ FTM2 Orchestrator (minimal)
 - Ctrl+C 안전 종료
 """
 from __future__ import annotations
+try:
+    from ftm2.core.logging import setup_logging
+    setup_logging()
+except Exception:
+    pass
+
+try:
+    from ftm2.ops.sentry_init import init_sentry
+    init_sentry()
+except Exception:
+    pass
+
 
 import os
 import time
