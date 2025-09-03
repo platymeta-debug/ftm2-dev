@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 from typing import Dict, Tuple, Optional
 from dataclasses import dataclass
+import json
 
 
 try:
@@ -89,6 +90,95 @@ def load_forecast_cfg(cfg_db) -> ForecastConfig:
     )
     return cfg
 
+
+@dataclass
+class _StrategyCfgView:
+    mode: str                 # dummy | ensemble | custom
+    class_path: Optional[str] # custom 시 필수
+    params: Optional[Dict]    # JSON 파라미터
+
+
+def load_strategy_cfg(cfg_db) -> _StrategyCfgView:
+    """
+    ENV: STRAT_MODE, STRAT_CLASS, STRAT_PARAMS(JSON)
+    DB : strat.mode, strat.class, strat.params
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k) if cfg_db else None
+        except Exception:
+            return None
+
+    def genv(k):
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    mode = (gdb("strat.mode") or genv("STRAT_MODE") or "dummy").lower()
+    cls = gdb("strat.class") or genv("STRAT_CLASS")
+    raw = gdb("strat.params") or genv("STRAT_PARAMS")
+    params = None
+    if raw:
+        try:
+            params = json.loads(raw)
+        except Exception:
+            params = None
+    if mode not in ("dummy", "ensemble", "custom"):
+        mode = "dummy"
+    return _StrategyCfgView(mode=mode, class_path=cls, params=params)
+
+
+@dataclass
+class _OpsHttpCfgView:
+    enabled: bool
+    host: str
+    port: int
+    ready_max_skew_s: float
+
+
+def load_ops_http_cfg(cfg_db) -> _OpsHttpCfgView:
+    """
+    ENV: OPS_HTTP_ENABLED, OPS_HTTP_HOST, OPS_HTTP_PORT, OPS_READY_MAX_SKEW_S
+    DB : ops.http.enabled, ops.http.host, ops.http.port, ops.http.ready_max_skew_s
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    return _OpsHttpCfgView(
+        enabled=b(gdb("ops.http.enabled") or genv("OPS_HTTP_ENABLED"), True),
+        host=s(gdb("ops.http.host") or genv("OPS_HTTP_HOST"), "0.0.0.0"),
+        port=i(gdb("ops.http.port") or genv("OPS_HTTP_PORT"), 8080),
+        ready_max_skew_s=f(gdb("ops.http.ready_max_skew_s") or genv("OPS_READY_MAX_SKEW_S"), 15.0),
+    )
 
 
 @dataclass
