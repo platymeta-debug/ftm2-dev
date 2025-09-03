@@ -15,10 +15,25 @@ import threading
 from typing import List
 
 # 로컬 모듈
-from ftm2.core.env import load_env_chain
-from ftm2.core.state import StateBus
-from ftm2.exchange.binance import BinanceClient
-from ftm2.data.streams import StreamManager
+try:
+    from ftm2.core.env import load_env_chain
+    from ftm2.core.state import StateBus
+    from ftm2.data.streams import StreamManager
+except Exception:  # pragma: no cover
+    from core.env import load_env_chain  # type: ignore
+    from core.state import StateBus  # type: ignore
+    from data.streams import StreamManager  # type: ignore
+
+try:
+    from ftm2.exchange.binance import BinanceClient
+except Exception:  # pragma: no cover
+    from exchange.binance import BinanceClient  # type: ignore
+
+try:
+    from ftm2.core.persistence import Persistence
+except Exception:  # pragma: no cover
+    from core.persistence import Persistence  # type: ignore
+
 
 try:
     from ftm2.discord_bot.bot import run_discord_bot
@@ -42,6 +57,15 @@ class Orchestrator:
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
+
+
+        self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
+        self.db = Persistence(self.db_path)
+        self.db.ensure_schema()
+        try:
+            self.db.record_event("INFO", "system", "boot")
+        except Exception:
+            pass
 
 
         self._stop = threading.Event()
@@ -119,10 +143,15 @@ class Orchestrator:
             self.streams.stop()
         except Exception:
             pass
-
         for t in list(self._threads):
             if t.is_alive():
                 t.join(timeout=2.0)
+        try:
+            self.db.record_event("INFO", "system", "shutdown")
+            self.db.close()
+        except Exception:
+            pass
+
         log.info("[SHUTDOWN] orchestrator stopped")
 
 
