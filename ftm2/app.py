@@ -20,6 +20,7 @@ from ftm2.core.state import StateBus
 from ftm2.exchange.binance import BinanceClient
 from ftm2.data.streams import StreamManager
 
+
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,10 +33,10 @@ class Orchestrator:
         self.symbols: List[str] = [s.strip() for s in (os.getenv("SYMBOLS") or "BTCUSDT,ETHUSDT").split(",") if s.strip()]
         self.tf_exec = os.getenv("TF_EXEC") or "1m"
         self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
-
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
+
 
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
@@ -67,6 +68,7 @@ class Orchestrator:
 
         # WS 스트림 시작
         self.streams.start()
+
 
         # 하트비트 스레드
         t = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
@@ -104,6 +106,7 @@ class Orchestrator:
             self.streams.stop()
         except Exception:
             pass
+
         for t in list(self._threads):
             if t.is_alive():
                 t.join(timeout=2.0)
