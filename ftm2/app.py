@@ -66,6 +66,7 @@ except Exception:  # pragma: no cover
     from signal.forecast import ForecastEnsemble, ForecastConfig  # type: ignore
 
 
+
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -92,6 +93,7 @@ class Orchestrator:
             self.kline_intervals[0] if self.kline_intervals else "5m"
         )
         self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, ForecastConfig())
+
 
 
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
@@ -136,6 +138,7 @@ class Orchestrator:
                 log.debug("[FEATURE_UPDATE] %s %s T=%s", r["symbol"], r["interval"], r["T"])
             time.sleep(period_s)
 
+
     def _regime_loop(self, period_s: float = 0.5) -> None:
         """
         닫힌 봉 기반 피처에서 레짐을 산출하고, 변경 시만 StateBus/알림을 갱신한다.
@@ -162,6 +165,7 @@ class Orchestrator:
                 except Exception:
                     pass
             time.sleep(period_s)
+
 
     def _forecast_loop(self, period_s: float = 0.5) -> None:
         """
@@ -193,6 +197,7 @@ class Orchestrator:
                     pass
             time.sleep(period_s)
 
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -217,6 +222,7 @@ class Orchestrator:
         t = threading.Thread(target=self._forecast_loop, name="forecast", daemon=True)
         t.start()
         self._threads.append(t)
+
 
         # 더미 전략 루프
         st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)

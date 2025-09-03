@@ -53,6 +53,7 @@ class StateBus:
         with self._lock:
             self._forecasts[(symbol, interval)] = dict(fc)
 
+
     # --- reads
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
