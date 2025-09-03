@@ -577,3 +577,4 @@ def load_backtest_cfg(cfg_db) -> _BacktestCfgView:
         start_ms=i(gdb("bt.start_ms") or genv("BT_START_MS"), None),
         end_ms=i(gdb("bt.end_ms") or genv("BT_END_MS"), None),
     )
+
