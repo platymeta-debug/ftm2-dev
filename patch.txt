@@ -35,3 +35,5 @@
 - feat(guard): 최대 레버(총합/심볼별)·손실 스톱아웃·트레일링 스탑 추가 — 즉시 reduceOnly MARKET 강제평탄/축소, DB/알림/핫리로드 연동
 - feat(exec_quality): 롤링 윈도우 실행 품질 리포터 추가 — 슬리피지(bps)·넛지/취소 집계, DB/디스코드/버스 반영 및 설정 핫리로드 경로
 - feat(order_ledger): 주문 원장/이벤트 테이블(orders/order_events) 추가 및 제출·체결 업데이트 적재, 윈도우 체결률/TTF·취소율 리포트
+- feat(kpi): 전략·리스크·실행 품질 KPI 리포터 추가 — 콘솔/디스코드 한국어 패널, StateBus.monitor.kpi 반영 및 핫리로드
+

@@ -445,3 +445,36 @@ def load_order_ledger_cfg(cfg_db) -> _OLCfgView:
         min_orders=i(gdb("ol.min_orders") or genv("OL_MIN_ORDERS"), 5),
     )
 
+
+@dataclass
+class _KPICfgView:
+    enabled: bool
+    report_sec: int
+    to_discord: bool
+    only_on_change: bool
+
+def load_kpi_cfg(cfg_db) -> _KPICfgView:
+    """
+    ENV: KPI_ENABLED, KPI_REPORT_SEC, KPI_TO_DISCORD, KPI_ONLY_ON_CHANGE
+    DB : kpi.enabled, kpi.report_sec, kpi.to_discord, kpi.only_on_change
+    """
+    def gdb(k):
+        try: return cfg_db.get_config(k)
+        except Exception: return None
+    def genv(k):
+        import os
+        v = os.getenv(k); return v if v not in (None, "") else None
+    def b(v, d):
+        if v is None: return d
+        return str(v).strip().lower() in ("1","true","yes","y","on")
+    def i(v, d):
+        try: return int(float(v)) if v is not None else d
+        except Exception: return d
+
+    return _KPICfgView(
+        enabled=b(gdb("kpi.enabled")      or genv("KPI_ENABLED"),       True),
+        report_sec=i(gdb("kpi.report_sec") or genv("KPI_REPORT_SEC"),   30),
+        to_discord=b(gdb("kpi.to_discord") or genv("KPI_TO_DISCORD"),   True),
+        only_on_change=b(gdb("kpi.only_on_change") or genv("KPI_ONLY_ON_CHANGE"), True),
+    )
+

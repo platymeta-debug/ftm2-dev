@@ -51,11 +51,6 @@ except Exception:  # pragma: no cover
     from signal.regime import RegimeClassifier, RegimeConfig  # type: ignore
 
 try:
-    from ftm2.discord_bot.notify import enqueue_alert
-except Exception:  # pragma: no cover
-    from discord_bot.notify import enqueue_alert  # type: ignore
-
-try:
     from ftm2.data.features import FeatureEngine, FeatureConfig
 except Exception:  # pragma: no cover
     from data.features import FeatureEngine, FeatureConfig  # type: ignore
@@ -115,6 +110,16 @@ try:
 except Exception:  # pragma: no cover
     from metrics.order_ledger import get_order_ledger, OLConfig  # type: ignore
     from core.config import load_order_ledger_cfg  # type: ignore
+
+try:
+    from ftm2.monitor.kpi import KPIReporter, KPIConfig
+    from ftm2.core.config import load_kpi_cfg
+    from ftm2.discord_bot.notify import enqueue_alert
+except Exception:  # pragma: no cover
+    from monitor.kpi import KPIReporter, KPIConfig  # type: ignore
+    from core.config import load_kpi_cfg  # type: ignore
+    from discord_bot.notify import enqueue_alert  # type: ignore
+
 
 
 
@@ -237,6 +242,15 @@ class Orchestrator:
                 min_orders=int(ol.min_orders),
             ),
         )
+
+        kcv = load_kpi_cfg(self.db)
+        self.kpi = KPIReporter(KPIConfig(
+            enabled=kcv.enabled,
+            report_sec=kcv.report_sec,
+            to_discord=kcv.to_discord,
+            only_on_change=kcv.only_on_change,
+        ))
+
 
 
 
@@ -454,6 +468,25 @@ class Orchestrator:
                     log.info("[GUARD][CFG] 업데이트 적용: %s", self.guard.cfg)
             except Exception as e:
                 log.warning("[GUARD][CFG] reload fail: %s", e)
+
+            try:
+                new_k = load_kpi_cfg(self.db)
+                cur = self.kpi.cfg
+                if (
+                    cur.enabled != new_k.enabled
+                    or cur.report_sec != new_k.report_sec
+                    or cur.to_discord != new_k.to_discord
+                    or cur.only_on_change != new_k.only_on_change
+                ):
+                    self.kpi.cfg = KPIConfig(
+                        new_k.enabled,
+                        new_k.report_sec,
+                        new_k.to_discord,
+                        new_k.only_on_change,
+                    )
+                    log.info("[KPI] cfg reload: %s", self.kpi.cfg)
+            except Exception as e:
+                log.warning("[KPI] cfg reload err: %s", e)
 
             time.sleep(period_s)
 
@@ -706,6 +739,35 @@ class Orchestrator:
             time.sleep(max(5.0, float(self.order_ledger.cfg.report_sec)))
 
 
+    def _kpi_loop(self) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                if not self.kpi.cfg.enabled:
+                    time.sleep(2.0)
+                    continue
+                k = self.kpi.compute(snap)
+                try:
+                    cur = self.bus.snapshot().get("monitor") or {}
+                    self.bus.set_monitor_state({**cur, "kpi": k})
+                except Exception:
+                    pass
+                if self.kpi.should_post(k):
+                    txt = self.kpi.format_text(k)
+                    log.info("[KPI] %s", txt.replace("\n", " | "))
+                    if self.kpi.cfg.to_discord:
+                        try:
+                            enqueue_alert(txt, intent="panel")
+                        except Exception:
+                            pass
+                else:
+                    log.debug("[KPI][SKIP] no-change")
+            except Exception as e:
+                log.warning("[KPI] loop err: %s", e)
+            time.sleep(max(3.0, float(self.kpi.cfg.report_sec)))
+
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -763,6 +825,11 @@ class Orchestrator:
 
         # 주문 원장 리포트 루프 시작
         t = threading.Thread(target=self._order_ledger_loop, name="order-ledger", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # KPI 루프 시작
+        t = threading.Thread(target=self._kpi_loop, name="kpi", daemon=True)
         t.start()
         self._threads.append(t)
 

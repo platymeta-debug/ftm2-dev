@@ -29,6 +29,7 @@ class StateBus:
         self._fills = deque(maxlen=1000)   # 체결 이벤트 큐
         self._open_orders: Dict[str, List[Dict[str, Any]]] = {}   # 심볼 → 오더 리스트
         self._guard: Dict[str, Any] = {}
+        self._monitor: Dict[str, Any] = {}   # KPI 등 모니터 상태
 
         self._boot_ts = int(time.time() * 1000)
 
@@ -90,6 +91,10 @@ class StateBus:
         with self._lock:
             self._guard = dict(state)
 
+    def set_monitor_state(self, state: Dict[str, Any]) -> None:
+        with self._lock:
+            self._monitor = dict(state)
+
 
 
 
@@ -108,6 +113,7 @@ class StateBus:
                 "risk": dict(self._risk),
                 "open_orders": {k: list(v) for k, v in self._open_orders.items()},
                 "guard": dict(self._guard),
+                "monitor": dict(self._monitor),
                 "boot_ts": self._boot_ts,
                 "now_ts": int(time.time() * 1000),
             }
