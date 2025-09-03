@@ -10,3 +10,5 @@
 # - feat(risk): ATR-unit 파라미터 세트 확정(R%, day-cut, corr-cap)
 2025-09-03 v0.1.0
 - feat(connector): add Binance USDⓈ-M client stubs with testnet/live toggle (REST/WS)
+- feat(orch): add minimal orchestrator & state bus with env loader, heartbeat, and REST mark-price poller
+

@@ -18,8 +18,6 @@ import os
 import time
 import hmac
 import json
-import math
-import queue
 import hashlib
 import threading
 import logging
@@ -250,7 +248,8 @@ class BinanceClient:
         t0 = time.perf_counter()
         _ = self.server_time()
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        return _ok({"ok": True, "latency_ms": latency_ms})
+        return _ok({"latency_ms": latency_ms})
+
 
     def server_time(self) -> Dict[str, Any]:
         return self._http_request("GET", "/v1/time")
