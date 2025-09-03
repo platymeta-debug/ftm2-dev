@@ -178,6 +178,21 @@ class StreamManager:
                     self.bus.set_positions(pos_map)
             elif evt == "ORDER_TRADE_UPDATE":
                 o = msg.get("o") or {}
+                rec = {
+                    "symbol": (o.get("s") or "").upper(),
+                    "side": o.get("S"),
+                    "execType": o.get("x"),
+                    "status": o.get("X"),
+                    "lastQty": float(o.get("l", 0.0)),
+                    "lastPrice": float(o.get("L", 0.0)),
+                    "cumQty": float(o.get("Z", 0.0)),
+                    "avgPrice": float(o.get("ap", 0.0)),
+                    "orderId": o.get("i"),
+                    "clientOrderId": o.get("c"),
+                    "commission": float(o.get("n", 0.0)),
+                    "ts": int(msg.get("E") or o.get("T") or 0),
+                }
+                self.bus.push_fill(rec)
                 log.info("[USER_STREAM][OTU] %s %s %s %s", o.get("s"), o.get("S"), o.get("X"), o.get("ap"))
         except Exception as e:
             log.exception("user cb err: %s", e)
