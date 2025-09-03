@@ -40,6 +40,13 @@ try:
 except Exception:  # pragma: no cover
     from discord_bot.bot import run_discord_bot  # type: ignore
 
+try:
+    from ftm2.signal.dummy import DummyForecaster
+    from ftm2.discord_bot.notify import enqueue_alert
+except Exception:  # pragma: no cover
+    from signal.dummy import DummyForecaster  # type: ignore
+    from discord_bot.notify import enqueue_alert  # type: ignore
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -53,10 +60,13 @@ class Orchestrator:
         self.symbols: List[str] = [s.strip() for s in (os.getenv("SYMBOLS") or "BTCUSDT,ETHUSDT").split(",") if s.strip()]
         self.tf_exec = os.getenv("TF_EXEC") or "1m"
         self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
+        self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
+
 
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
+        self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
 
 
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
@@ -99,6 +109,11 @@ class Orchestrator:
         # WS 스트림 시작
         self.streams.start()
 
+        # 더미 전략 루프
+        st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
+        st.start()
+        self._threads.append(st)
+
 
         # 하트비트 스레드
         t = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
@@ -130,6 +145,32 @@ class Orchestrator:
             uptime = self.bus.uptime_s()
             log.info("[HEARTBEAT] mode=%s uptime=%ss symbols=%d marks={%s}", self.mode, uptime, len(marks), ", ".join(lines))
             time.sleep(period_s)
+
+    def _strategy_loop(self, period_s: float = 1.0) -> None:
+        """
+        닫힌 봉을 감지해 더미 의도 신호를 방출(드라이런).
+        - 콘솔 로그, DB events, Discord 알림(가능 시)
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            intents = self.forecaster.evaluate(snap)
+            for it in intents:
+                sym = it["symbol"]
+                side = it["side"]
+                sc = float(it["score"])
+                bp = abs(sc) * 10000.0
+                msg = f"📡 {sym} 의도만: **{side}** / +{bp:.1f} / 사유: DUMMY"
+                log.info("[INTENT] %s", msg)
+                try:
+                    self.db.record_event("INFO", "intent", msg)
+                except Exception:
+                    pass
+                try:
+                    enqueue_alert(msg, intent="signals")
+                except Exception:
+                    pass
+            time.sleep(period_s)
+
 
     def _signal_stop(self, *_):
         log.info("[SHUTDOWN] stop requested")
