@@ -23,5 +23,10 @@
 - feat(discord): 한글 슬래시 명령, 대시보드 자동 갱신, 컨트롤 패널 스켈레톤
 - feat(persistence): SQLite 스켈레톤 — WAL, 스키마(trades/positions/pnl_daily/config/events/patches) 및 쓰기 유틸
 - feat(strategy): 더미 포캐스트 & 스카웃 드라이런 — 콘솔/DB/디스코드 알림
+2025-09-10 v0.2.0
+- feat(features): 닫힌 봉 기반 피처 엔진(EMA/ATR/RSI/수익률/RV/퍼센타일) 추가 및 StateBus 연동
+- feat(regime): EMA 스프레드·RV 백분위 기반 레짐 분류기(히스테리시스/최소 지속 바) 추가 및 StateBus/알림 연동
+- feat(forecast): 레짐별 가중 앙상블(추세/MR/크로스) + 온라인 성과(λ)로 미세 조정, 확률/스코어 산출 및 StateBus/알림 연동
+- feat(risk): ATR-unit 사이징, 사이드 상관캡, 데일리컷을 갖춘 리스크 엔진 추가 — ENV/DB 로드 및 버스/알림 연동
 # (요약) feat(milestone): M1 골격 & 테스트넷 라운드트립 완료
 

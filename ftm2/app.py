@@ -42,10 +42,35 @@ except Exception:  # pragma: no cover
 
 try:
     from ftm2.signal.dummy import DummyForecaster
-    from ftm2.discord_bot.notify import enqueue_alert
 except Exception:  # pragma: no cover
     from signal.dummy import DummyForecaster  # type: ignore
+
+try:
+    from ftm2.signal.regime import RegimeClassifier, RegimeConfig
+except Exception:  # pragma: no cover
+    from signal.regime import RegimeClassifier, RegimeConfig  # type: ignore
+
+try:
+    from ftm2.discord_bot.notify import enqueue_alert
+except Exception:  # pragma: no cover
     from discord_bot.notify import enqueue_alert  # type: ignore
+
+try:
+    from ftm2.data.features import FeatureEngine, FeatureConfig
+except Exception:  # pragma: no cover
+    from data.features import FeatureEngine, FeatureConfig  # type: ignore
+
+try:
+    from ftm2.signal.forecast import ForecastEnsemble, ForecastConfig
+except Exception:  # pragma: no cover
+    from signal.forecast import ForecastEnsemble, ForecastConfig  # type: ignore
+
+try:
+    from ftm2.trade.risk import RiskEngine, RiskConfig
+    from ftm2.core.config import load_forecast_cfg, load_risk_cfg
+except Exception:  # pragma: no cover
+    from trade.risk import RiskEngine, RiskConfig  # type: ignore
+    from core.config import load_forecast_cfg, load_risk_cfg  # type: ignore
 
 
 log = logging.getLogger("ftm2.orch")
@@ -61,13 +86,12 @@ class Orchestrator:
         self.tf_exec = os.getenv("TF_EXEC") or "1m"
         self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
+        self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
 
 
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
-        self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
-
 
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
@@ -76,6 +100,28 @@ class Orchestrator:
             self.db.record_event("INFO", "system", "boot")
         except Exception:
             pass
+
+        self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
+        self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
+        self.regime = RegimeClassifier(self.symbols, self.regime_interval, RegimeConfig())
+        self.forecast_interval = getattr(self, "regime_interval", None) or (
+            self.kline_intervals[0] if self.kline_intervals else "5m"
+        )
+        init_cfg = load_forecast_cfg(self.db)
+        self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, init_cfg)
+
+        rcfg_view = load_risk_cfg(self.db)
+        self.risk = RiskEngine(
+            self.symbols,
+            RiskConfig(
+                risk_target_pct=rcfg_view.risk_target_pct,
+                corr_cap_per_side=rcfg_view.corr_cap_per_side,
+                day_max_loss_pct=rcfg_view.day_max_loss_pct,
+                atr_k=rcfg_view.atr_k,
+                min_notional=rcfg_view.min_notional,
+                equity_override=rcfg_view.equity_override,
+            ),
+        )
 
 
         self._stop = threading.Event()
@@ -99,6 +145,176 @@ class Orchestrator:
                 log.debug("[PRICE_POLL] %s price=%s ts=%s", symbol, price, ts)
             time.sleep(interval_s)
 
+    def _features_loop(self, period_s: float = 0.5) -> None:
+        """
+        닫힌 봉을 감지해 피처 계산 후 StateBus에 갱신.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            rows = self.feature_engine.process_snapshot(snap)
+            for r in rows:
+                self.bus.update_features(r["symbol"], r["interval"], r["features"])
+                log.debug("[FEATURE_UPDATE] %s %s T=%s", r["symbol"], r["interval"], r["T"])
+            time.sleep(period_s)
+
+    def _regime_loop(self, period_s: float = 0.5) -> None:
+        """
+        닫힌 봉 기반 피처에서 레짐을 산출하고, 변경 시만 StateBus/알림을 갱신한다.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            changes = self.regime.process_snapshot(snap)
+            for chg in changes:
+                sym = chg["symbol"]
+                itv = chg["interval"]
+                reg = chg["regime"]
+                self.bus.update_regime(sym, itv, reg)
+                msg = (
+                    f"🧭 레짐 전환 — {sym}/{itv}: **{reg['label']}** "
+                    f"(코드: {reg['code']}, ema={reg['ema_spread']:.5f}, rv_pr={reg['rv_pr']:.3f})"
+                )
+                log.info(msg)
+                try:
+                    self.db.record_event("INFO", "regime", msg)
+                except Exception:
+                    pass
+                try:
+                    enqueue_alert(msg, intent="logs")
+                except Exception:
+                    pass
+            time.sleep(period_s)
+
+    def _reload_cfg_loop(self, period_s: float = 10.0) -> None:
+        """
+        DB/ENV에서 예측 파라미터를 주기적으로 재로딩.
+        변경이 감지되면 self.forecast.cfg 를 교체한다.
+        """
+        import dataclasses
+        while not self._stop.is_set():
+            try:
+                new_cfg = load_forecast_cfg(self.db)
+                if dataclasses.asdict(new_cfg) != dataclasses.asdict(self.forecast.cfg):
+                    self.forecast.cfg = new_cfg
+                    log.info("[FORECAST_CFG_RELOAD] 가중치/임계 업데이트 적용: %s", new_cfg)
+            except Exception as e:
+                log.warning("[FORECAST_CFG_RELOAD] 실패: %s", e)
+            try:
+                new_risk_view = load_risk_cfg(self.db)
+                cur = self.risk.cfg
+                if (
+                    cur.risk_target_pct != new_risk_view.risk_target_pct
+                    or cur.corr_cap_per_side != new_risk_view.corr_cap_per_side
+                    or cur.day_max_loss_pct != new_risk_view.day_max_loss_pct
+                    or cur.atr_k != new_risk_view.atr_k
+                    or cur.min_notional != new_risk_view.min_notional
+                    or cur.equity_override != new_risk_view.equity_override
+                ):
+                    self.risk.cfg = RiskConfig(
+                        risk_target_pct=new_risk_view.risk_target_pct,
+                        corr_cap_per_side=new_risk_view.corr_cap_per_side,
+                        day_max_loss_pct=new_risk_view.day_max_loss_pct,
+                        atr_k=new_risk_view.atr_k,
+                        min_notional=new_risk_view.min_notional,
+                        equity_override=new_risk_view.equity_override,
+                    )
+                    log.info("[RISK_CFG_RELOAD] 적용: %s", self.risk.cfg)
+            except Exception as e:
+                log.warning("[RISK_CFG_RELOAD] 실패: %s", e)
+            time.sleep(period_s)
+
+    def _forecast_loop(self, period_s: float = 0.5) -> None:
+        """
+        닫힌 봉 시점에 앙상블 예측을 계산하고 StateBus/DB/알림을 갱신.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            rows = self.forecast.process_snapshot(snap)
+            for r in rows:
+                fc = r["forecast"]
+                sym = r["symbol"]
+                itv = r["interval"]
+                self.bus.update_forecast(sym, itv, fc)
+                try:
+                    msg = (
+                        f"🎯 예측 — {sym}/{itv}: score={fc['score']:.3f} "
+                        f"p_up={fc['prob_up']:.3f} stance={fc['stance']} (regime={fc['regime']})"
+                    )
+                    self.db.record_event("INFO", "forecast", msg)
+                except Exception:
+                    pass
+                try:
+                    if abs(fc["score"]) >= self.forecast.cfg.strong_thr:
+                        arrow = "⬆️" if fc["score"] > 0 else "⬇️"
+                        enqueue_alert(
+                            f"{arrow} **강신호** — {sym}/{itv} score={fc['score']:.3f} p_up={fc['prob_up']:.3f} regime={fc['regime']}"
+                        )
+                except Exception:
+                    pass
+            time.sleep(period_s)
+
+    def _risk_loop(self, period_s: float = 0.5) -> None:
+        """
+        예측/피처/마크를 바탕으로 목표 포지션을 산출하고 버스/DB/알림을 갱신.
+        """
+        day_cut_sent = None
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            targets = self.risk.process_snapshot(snap)
+
+            eq = 0.0
+            try:
+                eq = float(self.risk._equity(snap))
+            except Exception:
+                pass
+            long_used = sum(t["target_notional"] for t in targets if t["target_qty"] > 0.0)
+            short_used = sum(t["target_notional"] for t in targets if t["target_qty"] < 0.0)
+
+            mapping = {t["symbol"]: t for t in targets}
+            self.bus.set_targets(mapping)
+            self.bus.set_risk_state({
+                "equity": eq,
+                "day_pnl_pct": self.risk._day_pnl_pct(snap),
+                "day_cut": self.risk.day_cut_on,
+                "used_long_ratio": (long_used / eq) if eq > 0 else 0.0,
+                "used_short_ratio": (short_used / eq) if eq > 0 else 0.0,
+                "corr_cap_per_side": self.risk.cfg.corr_cap_per_side,
+            })
+
+            for t in targets:
+                log.info(
+                    "[RISK] %s side=%s qty=%.6f notional=%.2f reason=%s",
+                    t["symbol"],
+                    t["side"],
+                    t["target_qty"],
+                    t["target_notional"],
+                    t["reason"],
+                )
+                try:
+                    self.db.record_event(
+                        "INFO",
+                        "risk",
+                        f"{t['symbol']} {t['side']} qty={t['target_qty']:.6f} notional={t['target_notional']:.2f} {t['reason']}",
+                    )
+                except Exception:
+                    pass
+
+            if self.risk.day_cut_on and day_cut_sent is not True:
+                msg = (
+                    f"🛑 데일리컷 발동: 당일 손실률 ≤ -{self.risk.cfg.day_max_loss_pct:.2f}% — 모든 타깃 0으로 설정"
+                )
+                log.warning("[DAY_CUT] on")
+                try:
+                    enqueue_alert(msg, intent="logs")
+                    self.db.record_event("WARN", "risk", "DAY_CUT_ON")
+                except Exception:
+                    pass
+                day_cut_sent = True
+            elif (not self.risk.day_cut_on) and day_cut_sent is not False:
+                log.info("[DAY_CUT] off")
+                day_cut_sent = False
+
+            time.sleep(period_s)
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -108,6 +324,31 @@ class Orchestrator:
 
         # WS 스트림 시작
         self.streams.start()
+
+        # 피처 루프 시작
+        t = threading.Thread(target=self._features_loop, name="features", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 레짐 루프 시작
+        t = threading.Thread(target=self._regime_loop, name="regime", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 예측 루프 시작
+        t = threading.Thread(target=self._forecast_loop, name="forecast", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 리스크 루프 시작
+        t = threading.Thread(target=self._risk_loop, name="risk", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 설정 핫리로드
+        t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
+        t.start()
+        self._threads.append(t)
 
         # 더미 전략 루프
         st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
