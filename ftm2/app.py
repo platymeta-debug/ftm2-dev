@@ -72,6 +72,35 @@ except Exception:  # pragma: no cover
     from trade.risk import RiskEngine, RiskConfig  # type: ignore
     from core.config import load_forecast_cfg, load_risk_cfg  # type: ignore
 
+try:
+    from ftm2.trade.router import OrderRouter, ExecConfig
+    from ftm2.core.config import load_exec_cfg
+except Exception:  # pragma: no cover
+    from trade.router import OrderRouter, ExecConfig  # type: ignore
+    from core.config import load_exec_cfg  # type: ignore
+
+try:
+    from ftm2.trade.reconcile import Reconciler, ProtectConfig
+    from ftm2.core.config import load_protect_cfg
+except Exception:  # pragma: no cover
+    from trade.reconcile import Reconciler, ProtectConfig  # type: ignore
+    from core.config import load_protect_cfg  # type: ignore
+
+
+
+try:
+    from ftm2.trade.open_orders import OpenOrdersManager, OOConfig
+    from ftm2.core.config import load_open_orders_cfg
+except Exception:  # pragma: no cover
+    from trade.open_orders import OpenOrdersManager, OOConfig  # type: ignore
+    from core.config import load_open_orders_cfg  # type: ignore
+
+try:
+    from ftm2.trade.guard import PositionGuard, GuardConfig
+    from ftm2.core.config import load_guard_cfg
+except Exception:  # pragma: no cover
+    from trade.guard import PositionGuard, GuardConfig  # type: ignore
+    from core.config import load_guard_cfg  # type: ignore
 
 
 log = logging.getLogger("ftm2.orch")
@@ -120,6 +149,60 @@ class Orchestrator:
                 equity_override=rcfg_view.equity_override,
             ),
         )
+
+        exv = load_exec_cfg(self.db)
+        self.exec_router = OrderRouter(
+            self.cli,
+            ExecConfig(
+                active=exv.active,
+                cooldown_s=exv.cooldown_s,
+                tol_rel=exv.tol_rel,
+                tol_abs=exv.tol_abs,
+                order_type=exv.order_type,
+                reduce_only=exv.reduce_only,
+            ),
+        )
+
+        pcv = load_protect_cfg(self.db)
+        self.reconciler = Reconciler(
+            self.bus, self.db, self.exec_router,
+            ProtectConfig(
+                slip_warn_pct=pcv.slip_warn_pct,
+                slip_max_pct=pcv.slip_max_pct,
+                stale_rel=pcv.stale_rel,
+                stale_secs=pcv.stale_secs,
+                eps_rel=pcv.eps_rel,
+                eps_abs=pcv.eps_abs,
+                partial_timeout_s=pcv.partial_timeout_s,
+                cancel_on_stale=pcv.cancel_on_stale,
+            ),
+        )
+        oov = load_open_orders_cfg(self.db)
+        self.oo_mgr = OpenOrdersManager(
+            self.cli, self.bus, self.exec_router,
+            OOConfig(
+                enabled=oov.enabled,
+                poll_s=oov.poll_s,
+                stale_secs=oov.stale_secs,
+                price_drift_pct=oov.price_drift_pct,
+                cancel_on_day_cut=oov.cancel_on_day_cut,
+                max_open_per_sym=oov.max_open_per_sym,
+            ),
+        )
+
+        gcv = load_guard_cfg(self.db)
+        self.guard = PositionGuard(
+            self.bus, self.exec_router,
+            GuardConfig(
+                enabled=gcv.enabled,
+                max_lever_total=gcv.max_lever_total,
+                max_lever_per_sym=gcv.max_lever_per_sym,
+                stop_pct=gcv.stop_pct,
+                trail_activate_pct=gcv.trail_activate_pct,
+                trail_width_pct=gcv.trail_width_pct,
+            ),
+        )
+
 
 
         self._stop = threading.Event()
@@ -221,6 +304,98 @@ class Orchestrator:
                     log.info("[RISK_CFG_RELOAD] 적용: %s", self.risk.cfg)
             except Exception as e:
                 log.warning("[RISK_CFG_RELOAD] 실패: %s", e)
+
+            try:
+                new_exec = load_exec_cfg(self.db)
+                cur = self.exec_router.cfg
+                if (
+                    cur.active != new_exec.active
+                    or cur.cooldown_s != new_exec.cooldown_s
+                    or cur.tol_rel != new_exec.tol_rel
+                    or cur.tol_abs != new_exec.tol_abs
+                    or cur.order_type != new_exec.order_type
+                    or cur.reduce_only != new_exec.reduce_only
+                ):
+                    self.exec_router.cfg = ExecConfig(
+                        active=new_exec.active,
+                        cooldown_s=new_exec.cooldown_s,
+                        tol_rel=new_exec.tol_rel,
+                        tol_abs=new_exec.tol_abs,
+                        order_type=new_exec.order_type,
+                        reduce_only=new_exec.reduce_only,
+                    )
+                    log.info("[EXEC_CFG_RELOAD] 적용: %s", self.exec_router.cfg)
+            except Exception as e:
+                log.warning("[EXEC_CFG_RELOAD] 실패: %s", e)
+
+            try:
+                new_pcv = load_protect_cfg(self.db)
+                rc = self.reconciler.cfg
+                if (
+                    rc.slip_warn_pct != new_pcv.slip_warn_pct
+                    or rc.slip_max_pct != new_pcv.slip_max_pct
+                    or rc.stale_rel != new_pcv.stale_rel
+                    or rc.stale_secs != new_pcv.stale_secs
+                    or rc.eps_rel != new_pcv.eps_rel
+                    or rc.eps_abs != new_pcv.eps_abs
+                    or rc.partial_timeout_s != new_pcv.partial_timeout_s
+                    or rc.cancel_on_stale != new_pcv.cancel_on_stale
+                ):
+                    self.reconciler.cfg = ProtectConfig(
+                        slip_warn_pct=new_pcv.slip_warn_pct,
+                        slip_max_pct=new_pcv.slip_max_pct,
+                        stale_rel=new_pcv.stale_rel,
+                        stale_secs=new_pcv.stale_secs,
+                        eps_rel=new_pcv.eps_rel,
+                        eps_abs=new_pcv.eps_abs,
+                        partial_timeout_s=new_pcv.partial_timeout_s,
+                        cancel_on_stale=new_pcv.cancel_on_stale,
+                    )
+                    log.info("[PROTECT_CFG_RELOAD] 적용: %s", self.reconciler.cfg)
+            except Exception as e:
+                log.warning("[PROTECT_CFG_RELOAD] 실패: %s", e)
+            try:
+                new_oov = load_open_orders_cfg(self.db)
+                cur = self.oo_mgr.cfg
+                if (cur.enabled != new_oov.enabled or
+                    cur.poll_s != new_oov.poll_s or
+                    cur.stale_secs != new_oov.stale_secs or
+                    cur.price_drift_pct != new_oov.price_drift_pct or
+                    cur.cancel_on_day_cut != new_oov.cancel_on_day_cut or
+                    cur.max_open_per_sym != new_oov.max_open_per_sym):
+                    self.oo_mgr.cfg = OOConfig(
+                        enabled=new_oov.enabled,
+                        poll_s=new_oov.poll_s,
+                        stale_secs=new_oov.stale_secs,
+                        price_drift_pct=new_oov.price_drift_pct,
+                        cancel_on_day_cut=new_oov.cancel_on_day_cut,
+                        max_open_per_sym=new_oov.max_open_per_sym,
+                    )
+                    log.info('[OO_CFG_RELOAD] 적용: %s', self.oo_mgr.cfg)
+            except Exception as e:
+                log.warning('[OO_CFG_RELOAD] 실패: %s', e)
+            try:
+                new_gcv = load_guard_cfg(self.db)
+                cur = self.guard.cfg
+                if (
+                    cur.enabled != new_gcv.enabled or
+                    cur.max_lever_total != new_gcv.max_lever_total or
+                    cur.max_lever_per_sym != new_gcv.max_lever_per_sym or
+                    cur.stop_pct != new_gcv.stop_pct or
+                    cur.trail_activate_pct != new_gcv.trail_activate_pct or
+                    cur.trail_width_pct != new_gcv.trail_width_pct
+                ):
+                    self.guard.cfg = GuardConfig(
+                        enabled=new_gcv.enabled,
+                        max_lever_total=new_gcv.max_lever_total,
+                        max_lever_per_sym=new_gcv.max_lever_per_sym,
+                        stop_pct=new_gcv.stop_pct,
+                        trail_activate_pct=new_gcv.trail_activate_pct,
+                        trail_width_pct=new_gcv.trail_width_pct,
+                    )
+                    log.info("[GUARD][CFG] 업데이트 적용: %s", self.guard.cfg)
+            except Exception as e:
+                log.warning("[GUARD][CFG] reload fail: %s", e)
             time.sleep(period_s)
 
 
@@ -319,6 +494,80 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _exec_loop(self, period_s: float = 1.0) -> None:
+        """
+        RiskEngine이 계산한 targets를 소비하여 주문(또는 드라이런)을 수행.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                res = self.exec_router.sync(snap)
+                for r in res:
+                    msg = (
+                        f"{r['mode']} {r['symbol']} {r['side']} Δ={r['delta_qty']:.6f} "
+                        f"qty={r['qty_sent']:.6f} {r['reason']}"
+                    )
+                    log.info("[EXEC] %s", msg)
+                    try:
+                        self.db.record_event("INFO", "exec", msg)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.warning("[EXEC_ERR] %s", e)
+            time.sleep(period_s)
+
+
+    def _reconcile_loop(self, period_s: float = 0.5) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                res = self.reconciler.process(snap)
+                if res.get("fills_saved"):
+                    log.info(
+                        "[RECON] fills_saved=%s slip_warns=%d nudges=%d",
+                        res["fills_saved"],
+                        len(res.get("slip_warns", [])),
+                        len(res.get("nudges", [])),
+                    )
+            except Exception as e:
+                log.warning("[RECON] loop err: %s", e)
+            time.sleep(period_s)
+
+
+    def _oo_loop(self) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                res = self.oo_mgr.poll_once(snap)
+                if res.get('cancelled'):
+                    for c in res['cancelled']:
+                        msg = '🧹 오더 취소 — {symbol} oid={orderId} ({reason})'.format(**c)
+                        log.info('[OO] %s', msg)
+                        try:
+                            self.db.record_event('INFO', 'open_orders', msg)
+                        except Exception:
+                            pass
+            except Exception as e:
+                log.warning('[OO] loop err: %s', e)
+            time.sleep(max(0.5, float(self.oo_mgr.cfg.poll_s)))
+
+    def _guard_loop(self, period_s: float = 0.5) -> None:
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            try:
+                acts = self.guard.process(snap)
+                if acts:
+                    try:
+                        self.bus.set_guard_state({"last_actions": acts[-5:]})
+                    except Exception:
+                        pass
+                    for a in acts:
+                        msg = f"{a['action']} {a['symbol']} qty={a['qty']:.6f} reason={a['reason']}"
+                        self.db.record_event("WARN", "guard", msg)
+            except Exception as e:
+                log.warning("[GUARD] loop err: %s", e)
+            time.sleep(period_s)
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -348,6 +597,25 @@ class Orchestrator:
         t = threading.Thread(target=self._risk_loop, name="risk", daemon=True)
         t.start()
         self._threads.append(t)
+
+        # 실행 루프 시작
+        t = threading.Thread(target=self._exec_loop, name="exec", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 리컨실 루프 시작
+        t = threading.Thread(target=self._reconcile_loop, name="reconcile", daemon=True)
+        t.start()
+        self._threads.append(t)
+        # 오픈오더 루프 시작
+        t = threading.Thread(target=self._oo_loop, name="open-orders", daemon=True)
+        t.start()
+        self._threads.append(t)
+        # 가드 루프 시작
+        t = threading.Thread(target=self._guard_loop, name="guard", daemon=True)
+        t.start()
+        self._threads.append(t)
+
 
         # 설정 핫리로드
         t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
