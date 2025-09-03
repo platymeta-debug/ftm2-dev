@@ -60,6 +60,12 @@ try:
 except Exception:  # pragma: no cover
     from data.features import FeatureEngine, FeatureConfig  # type: ignore
 
+try:
+    from ftm2.signal.forecast import ForecastEnsemble, ForecastConfig
+except Exception:  # pragma: no cover
+    from signal.forecast import ForecastEnsemble, ForecastConfig  # type: ignore
+
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -83,6 +89,10 @@ class Orchestrator:
         self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
         self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
         self.regime = RegimeClassifier(self.symbols, self.regime_interval, RegimeConfig())
+        self.forecast_interval = getattr(self, "regime_interval", None) or (
+            self.kline_intervals[0] if self.kline_intervals else "5m"
+        )
+        self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, ForecastConfig())
 
 
 
@@ -157,6 +167,37 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _forecast_loop(self, period_s: float = 0.5) -> None:
+        """
+        닫힌 봉 시점에 앙상블 예측을 계산하고 StateBus/DB/알림을 갱신.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            rows = self.forecast.process_snapshot(snap)
+            for r in rows:
+                fc = r["forecast"]
+                sym = r["symbol"]
+                itv = r["interval"]
+                self.bus.update_forecast(sym, itv, fc)
+                try:
+                    msg = (
+                        f"🎯 예측 — {sym}/{itv}: score={fc['score']:.3f} "
+                        f"p_up={fc['prob_up']:.3f} stance={fc['stance']} (regime={fc['regime']})"
+                    )
+                    self.db.record_event("INFO", "forecast", msg)
+                except Exception:
+                    pass
+                try:
+                    if abs(fc["score"]) >= self.forecast.cfg.strong_thr:
+                        arrow = "⬆️" if fc["score"] > 0 else "⬇️"
+                        enqueue_alert(
+                            f"{arrow} **강신호** — {sym}/{itv} score={fc['score']:.3f} p_up={fc['prob_up']:.3f} regime={fc['regime']}"
+                        )
+                except Exception:
+                    pass
+            time.sleep(period_s)
+
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -174,6 +215,11 @@ class Orchestrator:
 
         # 레짐 루프 시작
         t = threading.Thread(target=self._regime_loop, name="regime", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 예측 루프 시작
+        t = threading.Thread(target=self._forecast_loop, name="forecast", daemon=True)
         t.start()
         self._threads.append(t)
 

@@ -21,7 +21,7 @@ class StateBus:
         self._account: Dict[str, Any] = {}
         self._features: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._regimes: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
+        self._forecasts: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._boot_ts = int(time.time() * 1000)
 
     # --- updates
@@ -49,6 +49,10 @@ class StateBus:
         with self._lock:
             self._regimes[(symbol, interval)] = dict(regime)
 
+    def update_forecast(self, symbol: str, interval: str, fc: Dict[str, Any]) -> None:
+        with self._lock:
+            self._forecasts[(symbol, interval)] = dict(fc)
+
 
     # --- reads
     def snapshot(self) -> Dict[str, Any]:
@@ -60,7 +64,7 @@ class StateBus:
                 "account": dict(self._account),
                 "features": dict(self._features),
                 "regimes": dict(self._regimes),
-
+                "forecasts": dict(self._forecasts),
                 "boot_ts": self._boot_ts,
                 "now_ts": int(time.time() * 1000),
             }

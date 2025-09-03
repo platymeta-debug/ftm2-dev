@@ -29,6 +29,7 @@ def test_state_bus_snapshot():
     bus.update_kline("BTCUSDT", "1m", {"o":1})
     bus.set_positions([{"symbol": "BTCUSDT"}])
     bus.set_account({"balance": 1})
+    bus.update_forecast("BTCUSDT", "1m", {"score": 0.1})
     snap = bus.snapshot()
     assert snap["marks"]["BTCUSDT"]["price"] == 100.0
     assert snap["klines"][("BTCUSDT", "1m")]["o"] == 1
@@ -36,5 +37,6 @@ def test_state_bus_snapshot():
     assert snap["account"]["balance"] == 1
     assert snap["features"] == {}
     assert snap["regimes"] == {}
+    assert snap["forecasts"][('BTCUSDT', '1m')]["score"] == 0.1
     assert isinstance(snap["boot_ts"], int)
     assert isinstance(snap["now_ts"], int)
