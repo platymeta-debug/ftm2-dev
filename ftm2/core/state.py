@@ -19,6 +19,9 @@ class StateBus:
         self._klines: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._positions: List[Dict[str, Any]] = []
         self._account: Dict[str, Any] = {}
+        self._features: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._regimes: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._forecasts: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._boot_ts = int(time.time() * 1000)
 
     # --- updates
@@ -38,6 +41,18 @@ class StateBus:
         with self._lock:
             self._account = dict(account)
 
+    def update_features(self, symbol: str, interval: str, feats: Dict[str, Any]) -> None:
+        with self._lock:
+            self._features[(symbol, interval)] = dict(feats)
+
+    def update_regime(self, symbol: str, interval: str, regime: Dict[str, Any]) -> None:
+        with self._lock:
+            self._regimes[(symbol, interval)] = dict(regime)
+
+    def update_forecast(self, symbol: str, interval: str, fc: Dict[str, Any]) -> None:
+        with self._lock:
+            self._forecasts[(symbol, interval)] = dict(fc)
+
     # --- reads
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -46,7 +61,11 @@ class StateBus:
                 "klines": dict(self._klines),
                 "positions": list(self._positions),
                 "account": dict(self._account),
-                "ts": int(time.time() * 1000),
+                "features": dict(self._features),
+                "regimes": dict(self._regimes),
+                "forecasts": dict(self._forecasts),
+                "boot_ts": self._boot_ts,
+                "now_ts": int(time.time() * 1000),
             }
 
     def uptime_s(self) -> int:
