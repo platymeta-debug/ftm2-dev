@@ -52,3 +52,6 @@
 - feat(ops-deploy): docker-compose 프로파일(dry/testnet/live)로 운영 시나리오 분리
 - feat(logging): 로테이션 파일 로그 + 콘솔 로그 설정 모듈 도입(LOG_* ENV)
 - feat(ops): 운영 HTTP 엔드포인트 추가 — /healthz /readyz /metrics /kpi (Prometheus 호환), ENV/DB 설정 및 앱 결선 Sentry DSN 제공 시 자동 초기화(선택)
+
+2025-09-20 v0.4.2
+- feat(ops): Preflight Doctor — 라이브/테스트넷 핑, DB 쓰기, 듀얼 모드 유효성, /healthz/포트 점검 CLI
