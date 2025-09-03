@@ -212,12 +212,20 @@ class _ProtectCfgView:
     slip_max_pct: float
     stale_rel: float
     stale_secs: float
+    eps_rel: float
+    eps_abs: float
+    partial_timeout_s: float
+    cancel_on_stale: bool
+
 
 
 def load_protect_cfg(cfg_db) -> _ProtectCfgView:
     """
-    ENV: PROT_SLIP_WARN_PCT, PROT_SLIP_MAX_PCT, PROT_STALE_REL, PROT_STALE_SECS
-    DB : protect.slip_warn_pct, protect.slip_max_pct, protect.stale_rel, protect.stale_secs
+    ENV: PROT_SLIP_WARN_PCT, PROT_SLIP_MAX_PCT, PROT_STALE_REL, PROT_STALE_SECS,
+         PROT_EPS_REL, PROT_EPS_ABS, PROT_PARTIAL_TIMEOUT_S, PROT_CANCEL_ON_STALE
+    DB : protect.slip_warn_pct, protect.slip_max_pct, protect.stale_rel, protect.stale_secs,
+         protect.eps_rel, protect.eps_abs, protect.partial_timeout_s, protect.cancel_on_stale
+
     """
 
     def gdb(k):
@@ -237,11 +245,21 @@ def load_protect_cfg(cfg_db) -> _ProtectCfgView:
         except Exception:
             return d
 
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
     return _ProtectCfgView(
         slip_warn_pct=f(gdb("protect.slip_warn_pct") or genv("PROT_SLIP_WARN_PCT"), 0.003),
         slip_max_pct=f(gdb("protect.slip_max_pct") or genv("PROT_SLIP_MAX_PCT"), 0.008),
         stale_rel=f(gdb("protect.stale_rel") or genv("PROT_STALE_REL"), 0.5),
         stale_secs=f(gdb("protect.stale_secs") or genv("PROT_STALE_SECS"), 20.0),
+        eps_rel=f(gdb("protect.eps_rel") or genv("PROT_EPS_REL"), 0.10),
+        eps_abs=f(gdb("protect.eps_abs") or genv("PROT_EPS_ABS"), 0.0001),
+        partial_timeout_s=f(gdb("protect.partial_timeout_s") or genv("PROT_PARTIAL_TIMEOUT_S"), 45.0),
+        cancel_on_stale=b(gdb("protect.cancel_on_stale") or genv("PROT_CANCEL_ON_STALE"), True),
     )
 
 

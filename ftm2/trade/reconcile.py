@@ -30,6 +30,12 @@ class ProtectConfig:
     slip_max_pct: float = 0.008   # 0.8%
     stale_rel: float = 0.5        # |delta| > |target|*0.5
     stale_secs: float = 20.0      # 마지막 송신 후 20초 지나도 미이행이면 넛지
+    # ε-잔차 리포트 & 부분체결 타임아웃
+    eps_rel: float = 0.10         # |ε| > |target|*eps_rel 이면 리포트
+    eps_abs: float = 0.0001       # 혹은 |ε| > eps_abs
+    partial_timeout_s: float = 45.0  # NEW/PARTIALLY_FILLED 오래 지속 시 취소
+    cancel_on_stale: bool = True  # 타임아웃 시 취소 수행
+
 
 
 # [ANCHOR:RECONCILE]
@@ -39,6 +45,9 @@ class Reconciler:
         self.db = db
         self.router = router
         self.cfg = cfg
+        # 주문 상태 트래커: orderId -> 정보
+        self._orders: Dict[str, Dict[str, Any]] = {}
+
 
     def _save_fill(self, rec: Dict[str, Any]) -> None:
         # qty 부호(매수 +, 매도 -)
@@ -108,6 +117,73 @@ class Reconciler:
             out.append(sym)
         return out
 
+
+    def _track_order(self, rec: Dict[str, Any]) -> None:
+        """ORDER_TRADE_UPDATE로부터 오더 상태 업데이트"""
+        oid = str(rec.get("orderId") or "")
+        if not oid:
+            return
+        status = (rec.get("status") or "").upper()
+        d = self._orders.get(oid, {
+            "symbol": rec.get("symbol"),
+            "side": (rec.get("side") or "").upper(),
+            "cumQty": 0.0,
+            "status": "NEW",
+            "last_ts": int(rec.get("ts") or time.time()*1000),
+        })
+        d["status"] = status or d["status"]
+        d["cumQty"] = float(rec.get("cumQty") or d["cumQty"])
+        d["last_ts"] = int(rec.get("ts") or d["last_ts"])
+        self._orders[oid] = d
+
+        if d["status"] in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
+            self._orders.pop(oid, None)
+
+    def _epsilon_report(self, snapshot: Dict[str, Any]) -> List[str]:
+        msgs: List[str] = []
+        targets = snapshot.get("targets") or {}
+        positions = snapshot.get("positions") or {}
+        for sym, tgt in targets.items():
+            target_qty = float(tgt.get("target_qty") or 0.0)
+            pos = float((positions.get(sym) or {}).get("pa") or 0.0)
+            eps = target_qty - pos
+            thr = max(self.cfg.eps_abs, abs(target_qty) * self.cfg.eps_rel)
+            if abs(eps) > thr:
+                msg = f"Σε {sym}: ε={eps:.6f} (tgt={target_qty:.6f}, pos={pos:.6f})"
+                log.info("[RECON][EPS] %s", msg)
+                try:
+                    enqueue_alert(f"📏 잔차 보고 — {msg}", intent="logs")
+                except Exception:
+                    pass
+                msgs.append(msg)
+        return msgs
+
+    def _timeout_cancel(self, now_ms: int) -> List[str]:
+        if not self.cfg.cancel_on_stale:
+            return []
+        kicked: List[str] = []
+        for oid, d in list(self._orders.items()):
+            st = (d.get("status") or "").upper()
+            if st not in ("NEW", "PARTIALLY_FILLED"):
+                continue
+            last = int(d.get("last_ts") or 0)
+            if (now_ms - last) / 1000.0 < self.cfg.partial_timeout_s:
+                continue
+            sym = d.get("symbol")
+            r = self.router.cancel_open_orders(sym, order_id=oid)
+            if r.get("ok"):
+                log.warning("[RECON][CANCEL] timeout %ss %s oid=%s", self.cfg.partial_timeout_s, sym, oid)
+                try:
+                    enqueue_alert(f"🧹 부분체결 타임아웃 — {sym} 주문 취소(oid={oid})", intent="logs")
+                except Exception:
+                    pass
+                kicked.append(oid)
+                self._orders.pop(oid, None)
+            else:
+                log.warning("[RECON][CANCEL] 실패 %s oid=%s err=%s", sym, oid, r.get("error"))
+        return kicked
+
+
     def process(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         fills = self.bus.drain_fills(200)
         slip_msgs: List[str] = []
@@ -119,7 +195,19 @@ class Reconciler:
             except Exception as e:
                 log.warning("[RECON] save_fill 실패: %s", e)
             m = self._slip_check(f, snapshot)
-            if m: slip_msgs.append(m)
+
+            if m:
+                slip_msgs.append(m)
+            # 주문 상태 추적
+            self._track_order(f)
 
         nudged = self._maybe_nudge(snapshot)
-        return {"fills_saved": len(fills), "slip_warns": slip_msgs, "nudges": nudged}
+        eps_msgs = self._epsilon_report(snapshot)
+        kicked = self._timeout_cancel(int(snapshot.get("now_ts") or time.time()*1000))
+        return {
+            "fills_saved": len(fills),
+            "slip_warns": slip_msgs,
+            "nudges": nudged,
+            "eps_reports": eps_msgs,
+            "timeouts": kicked,
+        }

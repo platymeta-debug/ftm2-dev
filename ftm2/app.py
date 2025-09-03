@@ -157,6 +157,10 @@ class Orchestrator:
                 slip_max_pct=pcv.slip_max_pct,
                 stale_rel=pcv.stale_rel,
                 stale_secs=pcv.stale_secs,
+                eps_rel=pcv.eps_rel,
+                eps_abs=pcv.eps_abs,
+                partial_timeout_s=pcv.partial_timeout_s,
+                cancel_on_stale=pcv.cancel_on_stale,
             ),
         )
 
@@ -293,12 +297,22 @@ class Orchestrator:
                     or rc.slip_max_pct != new_pcv.slip_max_pct
                     or rc.stale_rel != new_pcv.stale_rel
                     or rc.stale_secs != new_pcv.stale_secs
+                    or rc.eps_rel != new_pcv.eps_rel
+                    or rc.eps_abs != new_pcv.eps_abs
+                    or rc.partial_timeout_s != new_pcv.partial_timeout_s
+                    or rc.cancel_on_stale != new_pcv.cancel_on_stale
+
                 ):
                     self.reconciler.cfg = ProtectConfig(
                         slip_warn_pct=new_pcv.slip_warn_pct,
                         slip_max_pct=new_pcv.slip_max_pct,
                         stale_rel=new_pcv.stale_rel,
                         stale_secs=new_pcv.stale_secs,
+                        eps_rel=new_pcv.eps_rel,
+                        eps_abs=new_pcv.eps_abs,
+                        partial_timeout_s=new_pcv.partial_timeout_s,
+                        cancel_on_stale=new_pcv.cancel_on_stale,
+
                     )
                     log.info("[PROTECT_CFG_RELOAD] 적용: %s", self.reconciler.cfg)
             except Exception as e:
