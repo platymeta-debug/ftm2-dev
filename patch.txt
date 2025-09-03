@@ -28,7 +28,6 @@
 - feat(regime): EMA 스프레드·RV 백분위 기반 레짐 분류기(히스테리시스/최소 지속 바) 추가 및 StateBus/알림 연동
 - feat(forecast): 레짐별 가중 앙상블(추세/MR/크로스) + 온라인 성과(λ)로 미세 조정, 확률/스코어 산출 및 StateBus/알림 연동
 - feat(risk): ATR-unit 사이징, 사이드 상관캡, 데일리컷을 갖춘 리스크 엔진 추가 — ENV/DB 로드 및 버스/알림 연동
-# (요약) feat(milestone): M1 골격 & 테스트넷 라운드트립 완료
 
 2025-09-15 v0.3.0
 - feat(exec): 타깃→주문 라우터 추가(쿨다운/허용오차/LOT_STEP·MIN_NOTIONAL/ReduceOnly/드라이런·실주문 토글) 및 핫리로드 연동
@@ -37,3 +36,4 @@
 - feat(open_orders): 미체결 주문 관리자 추가 — 정기 조회 및 정책 취소(드리프트/스테일/데일리컷/초과건수) + StateBus 반영/핫리로드
 - feat(guard): 최대 레버(총합/심볼별)·손실 스톱아웃·트레일링 스탑 추가 — 즉시 reduceOnly MARKET 강제평탄/축소, DB/알림/핫리로드 연동
 - feat(exec_quality): 롤링 윈도우 실행 품질 리포터 추가 — 슬리피지(bps)·넛지/취소 집계, DB/디스코드/버스 반영 및 설정 핫리로드 경로
+

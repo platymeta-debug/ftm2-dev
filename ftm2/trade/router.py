@@ -200,6 +200,7 @@ class OrderRouter:
         """쿨다운을 즉시 해제해 다음 루프에서 바로 재시도 가능하게 함"""
         self._last_sent_ms[sym] = 0
 
+
     def cancel_open_orders(self, symbol: str, order_id: Optional[str] = None) -> dict:
         """개별 주문 ID가 주어지면 가능할 때 개별 취소, 아니면 심볼 전체 취소.
         드라이런이면 로그만 남김."""
@@ -215,6 +216,7 @@ class OrderRouter:
             return {"ok": False, "error": "cancel API not available"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
 
     def force_flat(self, symbol: str, qty: Optional[float] = None) -> dict:
         """현재 포지션을 즉시 0으로 만들기 위한 reduceOnly MARKET.
@@ -247,3 +249,4 @@ class OrderRouter:
             return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+

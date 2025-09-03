@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover
     from trade.router import OrderRouter  # type: ignore
     from metrics.exec_quality import get_exec_quality  # type: ignore
 
+
 log = logging.getLogger("ftm2.openorders")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -94,10 +95,12 @@ class OpenOrdersManager:
         else:
             log.warning("[OO][CANCEL] 실패 %s oid=%s err=%s", sym, order_id, r.get("error"))
         results.append({"symbol": sym, "orderId": order_id, "reason": reason, "ok": r.get("ok")})
+
         try:
             get_exec_quality().ingest_cancels(1)
         except Exception:
             pass
+
 
     # ---- 메인 ----
     def poll_once(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:

@@ -218,12 +218,14 @@ class _ProtectCfgView:
     cancel_on_stale: bool
 
 
+
 def load_protect_cfg(cfg_db) -> _ProtectCfgView:
     """
     ENV: PROT_SLIP_WARN_PCT, PROT_SLIP_MAX_PCT, PROT_STALE_REL, PROT_STALE_SECS,
          PROT_EPS_REL, PROT_EPS_ABS, PROT_PARTIAL_TIMEOUT_S, PROT_CANCEL_ON_STALE
     DB : protect.slip_warn_pct, protect.slip_max_pct, protect.stale_rel, protect.stale_secs,
          protect.eps_rel, protect.eps_abs, protect.partial_timeout_s, protect.cancel_on_stale
+
     """
 
     def gdb(k):
@@ -247,6 +249,7 @@ def load_protect_cfg(cfg_db) -> _ProtectCfgView:
         if v is None:
             return d
         return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
 
     return _ProtectCfgView(
         slip_warn_pct=f(gdb("protect.slip_warn_pct") or genv("PROT_SLIP_WARN_PCT"), 0.003),
@@ -309,6 +312,7 @@ def load_open_orders_cfg(cfg_db) -> _OOCfgView:
     )
 
 
+
 @dataclass
 class _GuardCfgView:
     enabled: bool
@@ -359,6 +363,7 @@ def load_guard_cfg(cfg_db) -> _GuardCfgView:
     )
 
 
+
 @dataclass
 class _ExecQCfgView:
     window_sec: int
@@ -402,3 +407,4 @@ def load_execq_cfg(cfg_db) -> _ExecQCfgView:
         min_fills=i(gdb("eq.min_fills") or genv("EQ_MIN_FILLS"), 5),
         report_sec=i(gdb("eq.report_sec") or genv("EQ_REPORT_SEC"), 30),
     )
+

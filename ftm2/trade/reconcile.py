@@ -14,12 +14,14 @@ try:
     from ftm2.trade.router import OrderRouter
     from ftm2.discord_bot.notify import enqueue_alert
     from ftm2.metrics.exec_quality import get_exec_quality
+
 except Exception:  # pragma: no cover
     from core.persistence import Persistence            # type: ignore
     from core.state import StateBus                     # type: ignore
     from trade.router import OrderRouter                # type: ignore
     from discord_bot.notify import enqueue_alert        # type: ignore
     from metrics.exec_quality import get_exec_quality   # type: ignore
+
 
 log = logging.getLogger("ftm2.recon")
 if not log.handlers:
@@ -39,6 +41,7 @@ class ProtectConfig:
     cancel_on_stale: bool = True  # 타임아웃 시 취소 수행
 
 
+
 # [ANCHOR:RECONCILE]
 class Reconciler:
     def __init__(self, bus: StateBus, db: Persistence, router: OrderRouter, cfg: ProtectConfig = ProtectConfig()) -> None:
@@ -48,6 +51,7 @@ class Reconciler:
         self.cfg = cfg
         # 주문 상태 트래커: orderId -> 정보
         self._orders: Dict[str, Dict[str, Any]] = {}
+
 
     def _save_fill(self, rec: Dict[str, Any]) -> None:
         # qty 부호(매수 +, 매도 -)
@@ -117,6 +121,7 @@ class Reconciler:
             out.append(sym)
         return out
 
+
     def _track_order(self, rec: Dict[str, Any]) -> None:
         """ORDER_TRADE_UPDATE로부터 오더 상태 업데이트"""
         oid = str(rec.get("orderId") or "")
@@ -182,6 +187,7 @@ class Reconciler:
                 log.warning("[RECON][CANCEL] 실패 %s oid=%s err=%s", sym, oid, r.get("error"))
         return kicked
 
+
     def process(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         fills = self.bus.drain_fills(200)
         slip_msgs: List[str] = []
@@ -193,6 +199,7 @@ class Reconciler:
             except Exception as e:
                 log.warning("[RECON] save_fill 실패: %s", e)
             m = self._slip_check(f, snapshot)
+
             if m:
                 slip_msgs.append(m)
             try:
@@ -203,17 +210,20 @@ class Reconciler:
                 get_exec_quality().ingest_fill(sym, side, float(f.get("lastQty") or 0.0), fill_px, mark_px, int(f.get("ts") or 0))
             except Exception:
                 pass
+
             # 주문 상태 추적
             self._track_order(f)
 
         nudged = self._maybe_nudge(snapshot)
         eps_msgs = self._epsilon_report(snapshot)
         kicked = self._timeout_cancel(int(snapshot.get("now_ts") or time.time()*1000))
+
         try:
             if nudged:
                 get_exec_quality().ingest_nudges(len(nudged), int(snapshot.get("now_ts") or 0))
         except Exception:
             pass
+
         return {
             "fills_saved": len(fills),
             "slip_warns": slip_msgs,
