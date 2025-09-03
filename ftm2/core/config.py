@@ -579,6 +579,7 @@ def load_backtest_cfg(cfg_db) -> _BacktestCfgView:
     )
 
 
+
 # --- Dual-mode loader ---
 @dataclass
 class _ModesCfgView:
@@ -614,3 +615,4 @@ def load_modes_cfg(cfg_db) -> _ModesCfgView:
     if tm not in ("dry", "testnet", "live"):
         tm = "dry"
     return _ModesCfgView(dm, tm)
+
