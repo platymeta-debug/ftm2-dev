@@ -30,6 +30,7 @@ try:  # runtime alerts queue
 except Exception:  # pragma: no cover
     from discord_bot.notify import QUEUE as ALERTS_QUEUE  # type: ignore
 
+
 log = logging.getLogger("ftm2.discord")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -84,6 +85,7 @@ else:
                 self._update_dashboard.start()
                 self._pump_alerts.start()
 
+
         @tasks.loop(seconds=15)
         async def _update_dashboard(self):  # pragma: no cover - 실제 실행 환경 의존
             try:
@@ -95,6 +97,7 @@ else:
         @_update_dashboard.before_loop  # pragma: no cover - 실제 실행 환경 의존
         async def _before_update(self):
             await self.wait_until_ready()
+
 
         @tasks.loop(seconds=2)
         async def _pump_alerts(self):  # pragma: no cover - 실제 실행 환경 의존
@@ -142,6 +145,7 @@ else:
                     os.remove(tmp)
                 except Exception:
                     pass
+
 
     def run_discord_bot(bus: StateBus) -> None:
         token = os.getenv("DISCORD_BOT_TOKEN") or ""
