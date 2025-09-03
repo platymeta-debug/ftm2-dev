@@ -55,3 +55,7 @@
 
 2025-09-20 v0.4.2
 - feat(ops): Preflight Doctor — 라이브/테스트넷 핑, DB 쓰기, 듀얼 모드 유효성, /healthz/포트 점검 CLI
+
+2025-09-03 v0.6.1
+- feat(ops): Ctrl+C 그레이스풀 종료 — OPS HTTP 서버 shutdown/join 추가
+- feat(streams): websocket-client 미설치 시 REST markPrice 폴백(옵션) 지원

@@ -31,6 +31,7 @@ class StreamManager:
         *,
         use_mark: bool = True,
         use_user: bool = True,
+        rest_fallback: bool = True,
     ) -> None:
         """
         data_client: 공개 데이터(LIVE/TESTNET 상관없음)
@@ -43,8 +44,10 @@ class StreamManager:
         self.kline_intervals = kline_intervals
         self.use_mark = use_mark
         self.use_user = use_user
+        self.rest_fallback = rest_fallback
 
         self._handles: List[WSHandle] = []
+        self._poll_ths: List[threading.Thread] = []
         self._stop = threading.Event()
 
         # user stream
@@ -59,16 +62,25 @@ class StreamManager:
                 h = self.data_cli.subscribe_kline(sym, itv, self._on_kline)
                 if h.error:
                     log.warning("[WS HANDLE_ERR] kline %s %s %s", sym, itv, h.error)
-                self._handles.append(h)
+                else:
+                    self._handles.append(h)
         # mark price
         if self.use_mark:
             for sym in self.symbols:
                 h = self.data_cli.subscribe_mark_price(sym, self._on_mark)
                 if h.error:
                     log.warning("[WS HANDLE_ERR] markPrice %s %s", sym, h.error)
-                self._handles.append(h)
+                    code = h.error.get("error", {}).get("code") if h.error else None
+                    if code == "E_WS_DRIVER_MISSING" and self.rest_fallback:
+                        t = threading.Thread(target=self._poll_mark,
+                                             args=(sym,), name=f"mark-poll:{sym}",
+                                             daemon=True)
+                        t.start()
+                        self._poll_ths.append(t)
+                else:
+                    self._handles.append(h)
 
-        log.info("[WS START] kline=%s mark=%s symbols=%d", 
+        log.info("[WS START] kline=%s mark=%s symbols=%d",
                  ",".join(self.kline_intervals), self.use_mark, len(self.symbols))
 
         # user stream
@@ -110,7 +122,22 @@ class StreamManager:
 
         if self._keepalive_th and self._keepalive_th.is_alive():
             self._keepalive_th.join(timeout=2.0)
+        for t in list(self._poll_ths):
+            if t.is_alive():
+                t.join(timeout=2.0)
+        self._poll_ths.clear()
         log.info("[WS STOPPED] all streams closed")
+
+    def _poll_mark(self, symbol: str, interval_s: float = 1.0) -> None:
+        while not self._stop.is_set():
+            r = self.data_cli.mark_price(symbol)
+            if r.get("ok"):
+                d = r["data"]
+                price = float(d.get("markPrice", 0.0))
+                ts = int(d.get("time") or int(time.time() * 1000))
+                self.bus.update_mark(symbol, price, ts)
+                log.debug("[REST MARK] %s price=%s ts=%s", symbol, price, ts)
+            time.sleep(interval_s)
 
     # ---------------------- callbacks ----------------------
     def _on_kline(self, msg: Dict[str, Any]) -> None:
