@@ -181,6 +181,7 @@ def load_ops_http_cfg(cfg_db) -> _OpsHttpCfgView:
     )
 
 
+
 @dataclass
 class _RiskCfgView:
     risk_target_pct: float

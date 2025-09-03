@@ -47,6 +47,4 @@
 2025-09-19 v0.4.1
 - feat(strategy-adapter): 백테스트/리플레이에 실전 ForecastEnsemble 주입 가능하도록 어댑터 계층 추가(STRAT_MODE/CLASS/PARAMS)
 - feat(backtest): 러너가 어댑터를 통해 예측을 생성하도록 변경(스냅샷 호환 유지)
-
-
 - feat(ops): 운영 HTTP 엔드포인트 추가 — /healthz /readyz /metrics /kpi (Prometheus 호환), ENV/DB 설정 및 앱 결선
