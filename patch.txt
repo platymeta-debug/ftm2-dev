@@ -8,3 +8,10 @@
 # - feat(state): 전역 스냅샷 버스 규격 확정
 # - feat(discord): /mode /auto /close 명령 스펙 고정
 # - feat(risk): ATR-unit 파라미터 세트 확정(R%, day-cut, corr-cap)
+2025-09-03 v0.1.0
+- feat(connector): add Binance USDⓈ-M client stubs with testnet/live toggle (REST/WS)
+- feat(orch): add minimal orchestrator & state bus with env loader, heartbeat, and REST mark-price poller
+- feat(streams): add StreamManager for kline/markPrice/user streams and StateBus updates
+- feat(discord): add Korean-localized slash commands, dashboard auto-update, and control panel skeleton
+- feat(persistence): add SQLite skeleton with WAL, schema (trades/positions/pnl_daily/config/events/patches) and write helpers
+- feat(strategy): add dummy forecaster and scout dry-run with DB/console/Discord alerts
