@@ -144,3 +144,166 @@ def load_risk_cfg(cfg_db) -> _RiskCfgView:
         equity_override=eo_f,
     )
 
+
+@dataclass
+class _ExecCfgView:
+    active: bool
+    cooldown_s: float
+    tol_rel: float
+    tol_abs: float
+    order_type: str
+    reduce_only: bool
+
+
+def _get_db_val(cfg_db, key: str) -> Optional[str]:
+    try:
+        return cfg_db.get_config(key)
+    except Exception:
+        return None
+
+
+def _get_env_val(key: str) -> Optional[str]:
+    import os
+    v = os.getenv(key)
+    return v if v not in (None, "") else None
+
+
+def _as_bool(v: Optional[str], default: bool) -> bool:
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _as_float(v: Optional[str], default: float) -> float:
+    try:
+        return float(v) if v is not None else default
+    except Exception:
+        return default
+
+
+def load_exec_cfg(cfg_db) -> _ExecCfgView:
+    """
+    ENV:
+      EXEC_ACTIVE, EXEC_COOLDOWN_S, EXEC_TOL_REL, EXEC_TOL_ABS, EXEC_ORDER_TYPE, EXEC_REDUCE_ONLY
+    DB:
+      exec.active, exec.cooldown_s, exec.tol_rel, exec.tol_abs, exec.order_type, exec.reduce_only
+    """
+
+    A = _get_db_val(cfg_db, "exec.active") or _get_env_val("EXEC_ACTIVE")
+    CD = _get_db_val(cfg_db, "exec.cooldown_s") or _get_env_val("EXEC_COOLDOWN_S")
+    TR = _get_db_val(cfg_db, "exec.tol_rel") or _get_env_val("EXEC_TOL_REL")
+    TA = _get_db_val(cfg_db, "exec.tol_abs") or _get_env_val("EXEC_TOL_ABS")
+    OT = _get_db_val(cfg_db, "exec.order_type") or _get_env_val("EXEC_ORDER_TYPE")
+    RO = _get_db_val(cfg_db, "exec.reduce_only") or _get_env_val("EXEC_REDUCE_ONLY")
+
+    return _ExecCfgView(
+        active=_as_bool(A, False),
+        cooldown_s=_as_float(CD, 5.0),
+        tol_rel=_as_float(TR, 0.05),
+        tol_abs=_as_float(TA, 0.0),
+        order_type=(OT or "MARKET"),
+        reduce_only=_as_bool(RO, True),
+    )
+
+
+@dataclass
+class _ProtectCfgView:
+    slip_warn_pct: float
+    slip_max_pct: float
+    stale_rel: float
+    stale_secs: float
+    eps_rel: float
+    eps_abs: float
+    partial_timeout_s: float
+    cancel_on_stale: bool
+
+
+def load_protect_cfg(cfg_db) -> _ProtectCfgView:
+    """
+    ENV: PROT_SLIP_WARN_PCT, PROT_SLIP_MAX_PCT, PROT_STALE_REL, PROT_STALE_SECS,
+         PROT_EPS_REL, PROT_EPS_ABS, PROT_PARTIAL_TIMEOUT_S, PROT_CANCEL_ON_STALE
+    DB : protect.slip_warn_pct, protect.slip_max_pct, protect.stale_rel, protect.stale_secs,
+         protect.eps_rel, protect.eps_abs, protect.partial_timeout_s, protect.cancel_on_stale
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    return _ProtectCfgView(
+        slip_warn_pct=f(gdb("protect.slip_warn_pct") or genv("PROT_SLIP_WARN_PCT"), 0.003),
+        slip_max_pct=f(gdb("protect.slip_max_pct") or genv("PROT_SLIP_MAX_PCT"), 0.008),
+        stale_rel=f(gdb("protect.stale_rel") or genv("PROT_STALE_REL"), 0.5),
+        stale_secs=f(gdb("protect.stale_secs") or genv("PROT_STALE_SECS"), 20.0),
+        eps_rel=f(gdb("protect.eps_rel") or genv("PROT_EPS_REL"), 0.10),
+        eps_abs=f(gdb("protect.eps_abs") or genv("PROT_EPS_ABS"), 0.0001),
+        partial_timeout_s=f(gdb("protect.partial_timeout_s") or genv("PROT_PARTIAL_TIMEOUT_S"), 45.0),
+        cancel_on_stale=b(gdb("protect.cancel_on_stale") or genv("PROT_CANCEL_ON_STALE"), True),
+    )
+
+
+
+@dataclass
+class _OOCfgView:
+    enabled: bool
+    poll_s: float
+    stale_secs: float
+    price_drift_pct: float
+    cancel_on_day_cut: bool
+    max_open_per_sym: int
+
+
+def load_open_orders_cfg(cfg_db) -> _OOCfgView:
+    """
+    ENV: OO_ENABLED, OO_POLL_S, OO_STALE_SECS, OO_PRICE_DRIFT_PCT, OO_CANCEL_ON_DAY_CUT, OO_MAX_OPEN_PER_SYM
+    DB : oo.enabled, oo.poll_s, oo.stale_secs, oo.price_drift_pct, oo.cancel_on_day_cut, oo.max_open_per_sym
+    """
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+    return _OOCfgView(
+        enabled=b(gdb("oo.enabled") or genv("OO_ENABLED"), True),
+        poll_s=f(gdb("oo.poll_s") or genv("OO_POLL_S"), 3.0),
+        stale_secs=f(gdb("oo.stale_secs") or genv("OO_STALE_SECS"), 45.0),
+        price_drift_pct=f(gdb("oo.price_drift_pct") or genv("OO_PRICE_DRIFT_PCT"), 0.004),
+        cancel_on_day_cut=b(gdb("oo.cancel_on_day_cut") or genv("OO_CANCEL_ON_DAY_CUT"), True),
+        max_open_per_sym=i(gdb("oo.max_open_per_sym") or genv("OO_MAX_OPEN_PER_SYM"), 2),
+    )
