@@ -250,6 +250,7 @@ class BinanceClient:
         latency_ms = int((time.perf_counter() - t0) * 1000)
         return _ok({"latency_ms": latency_ms})
 
+
     def server_time(self) -> Dict[str, Any]:
         return self._http_request("GET", "/v1/time")
 
