@@ -47,6 +47,11 @@ except Exception:  # pragma: no cover
     from signal.dummy import DummyForecaster  # type: ignore
     from discord_bot.notify import enqueue_alert  # type: ignore
 
+try:
+    from ftm2.data.features import FeatureEngine, FeatureConfig
+except Exception:  # pragma: no cover
+    from data.features import FeatureEngine, FeatureConfig  # type: ignore
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -67,6 +72,7 @@ class Orchestrator:
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
         self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
+        self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
 
 
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
@@ -99,6 +105,18 @@ class Orchestrator:
                 log.debug("[PRICE_POLL] %s price=%s ts=%s", symbol, price, ts)
             time.sleep(interval_s)
 
+    def _features_loop(self, period_s: float = 0.5) -> None:
+        """
+        닫힌 봉을 감지해 피처 계산 후 StateBus에 갱신.
+        """
+        while not self._stop.is_set():
+            snap = self.bus.snapshot()
+            rows = self.feature_engine.process_snapshot(snap)
+            for r in rows:
+                self.bus.update_features(r["symbol"], r["interval"], r["features"])
+                log.debug("[FEATURE_UPDATE] %s %s T=%s", r["symbol"], r["interval"], r["T"])
+            time.sleep(period_s)
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -108,6 +126,11 @@ class Orchestrator:
 
         # WS 스트림 시작
         self.streams.start()
+
+        # 피처 루프 시작
+        t = threading.Thread(target=self._features_loop, name="features", daemon=True)
+        t.start()
+        self._threads.append(t)
 
         # 더미 전략 루프
         st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
