@@ -122,6 +122,13 @@ except Exception:  # pragma: no cover
 
 
 
+try:
+    from ftm2.replay.engine import ReplayEngine, ReplayConfig
+    from ftm2.core.config import load_replay_cfg
+except Exception:  # pragma: no cover
+    from replay.engine import ReplayEngine, ReplayConfig  # type: ignore
+    from core.config import load_replay_cfg  # type: ignore
+
 
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
@@ -242,7 +249,6 @@ class Orchestrator:
                 min_orders=int(ol.min_orders),
             ),
         )
-
         kcv = load_kpi_cfg(self.db)
         self.kpi = KPIReporter(KPIConfig(
             enabled=kcv.enabled,
@@ -250,6 +256,19 @@ class Orchestrator:
             to_discord=kcv.to_discord,
             only_on_change=kcv.only_on_change,
         ))
+        # REPLAY 엔진 준비 (라이브 스트림과 병행하지 않도록 ENV로 제어)
+        rcv = load_replay_cfg(self.db)
+        self.replay = ReplayEngine(
+            self.bus, self.db,
+            ReplayConfig(
+                enabled=rcv.enabled,
+                src=rcv.src,
+                speed=rcv.speed,
+                loop=rcv.loop,
+                default_interval=rcv.default_interval,
+            ),
+        )
+
 
 
 
@@ -775,8 +794,15 @@ class Orchestrator:
         #     t.start()
         #     self._threads.append(t)
 
-        # WS 스트림 시작
-        self.streams.start()
+        # WS 스트림 또는 리플레이 시작
+        if getattr(self.replay.cfg, "enabled", False):
+            log.info("[APP] REPLAY 모드: 파일=%s 속도=%.2fx", self.replay.cfg.src, self.replay.cfg.speed)
+            try:
+                self.replay.start()
+            except Exception as e:
+                log.warning("[APP][REPLAY] 시작 실패: %s", e)
+        else:
+            self.streams.start()
 
         # 피처 루프 시작
         t = threading.Thread(target=self._features_loop, name="features", daemon=True)
@@ -911,6 +937,10 @@ class Orchestrator:
         self._stop.set()
         try:
             self.streams.stop()
+        except Exception:
+            pass
+        try:
+            self.replay.stop()
         except Exception:
             pass
         for t in list(self._threads):

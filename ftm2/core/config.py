@@ -478,3 +478,40 @@ def load_kpi_cfg(cfg_db) -> _KPICfgView:
         only_on_change=b(gdb("kpi.only_on_change") or genv("KPI_ONLY_ON_CHANGE"), True),
     )
 
+
+
+@dataclass
+class _ReplayCfgView:
+    enabled: bool
+    src: str
+    speed: float
+    loop: bool
+    default_interval: str
+
+def load_replay_cfg(cfg_db) -> _ReplayCfgView:
+    """
+    ENV: REPLAY_ENABLED, REPLAY_SRC, REPLAY_SPEED, REPLAY_LOOP, REPLAY_DEFAULT_INTERVAL
+    DB : replay.enabled, replay.src, replay.speed, replay.loop, replay.default_interval
+    """
+    def gdb(k):
+        try: return cfg_db.get_config(k)
+        except Exception: return None
+    def genv(k):
+        import os
+        v = os.getenv(k); return v if v not in (None, "") else None
+    def b(v, d):
+        if v is None: return d
+        return str(v).strip().lower() in ("1","true","yes","y","on")
+    def f(v, d):
+        try: return float(v) if v is not None else d
+        except Exception: return d
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    return _ReplayCfgView(
+        enabled=b(gdb("replay.enabled") or genv("REPLAY_ENABLED"), False),
+        src=s(gdb("replay.src") or genv("REPLAY_SRC"), "./data/replay.ndjson"),
+        speed=f(gdb("replay.speed") or genv("REPLAY_SPEED"), 5.0),
+        loop=b(gdb("replay.loop") or genv("REPLAY_LOOP"), False),
+        default_interval=s(gdb("replay.default_interval") or genv("REPLAY_DEFAULT_INTERVAL"), "1m"),
+    )
