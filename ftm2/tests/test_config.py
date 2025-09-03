@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from ftm2.core.config import load_forecast_cfg, load_risk_cfg
+from ftm2.core.config import load_forecast_cfg, load_risk_cfg, load_ops_http_cfg
 from ftm2.signal.forecast import ForecastEnsemble, ForecastConfig
 from ftm2.trade.risk import RiskEngine, RiskConfig
 from ftm2.app import Orchestrator
@@ -45,6 +45,15 @@ def test_load_risk_cfg_priority(monkeypatch):
     assert cfg.risk_target_pct == 0.4
     assert cfg.corr_cap_per_side == 0.5
     assert cfg.atr_k == 2.0
+
+
+def test_load_ops_http_cfg_priority(monkeypatch):
+    monkeypatch.setenv("OPS_HTTP_PORT", "9000")
+    db = DummyDB({"ops.http.enabled": "false"})
+    cfg = load_ops_http_cfg(db)
+    assert cfg.enabled is False
+    assert cfg.port == 9000
+    assert cfg.host == "0.0.0.0"
 
 
 def test_reload_cfg_loop_updates(monkeypatch):

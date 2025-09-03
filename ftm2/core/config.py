@@ -129,6 +129,60 @@ def load_strategy_cfg(cfg_db) -> _StrategyCfgView:
 
 
 @dataclass
+class _OpsHttpCfgView:
+    enabled: bool
+    host: str
+    port: int
+    ready_max_skew_s: float
+
+
+def load_ops_http_cfg(cfg_db) -> _OpsHttpCfgView:
+    """
+    ENV: OPS_HTTP_ENABLED, OPS_HTTP_HOST, OPS_HTTP_PORT, OPS_READY_MAX_SKEW_S
+    DB : ops.http.enabled, ops.http.host, ops.http.port, ops.http.ready_max_skew_s
+    """
+
+    def gdb(k):
+        try:
+            return cfg_db.get_config(k)
+        except Exception:
+            return None
+
+    def genv(k):
+        import os
+        v = os.getenv(k)
+        return v if v not in (None, "") else None
+
+    def b(v, d):
+        if v is None:
+            return d
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    def i(v, d):
+        try:
+            return int(float(v)) if v is not None else d
+        except Exception:
+            return d
+
+    def f(v, d):
+        try:
+            return float(v) if v is not None else d
+        except Exception:
+            return d
+
+    def s(v, d):
+        return v if v not in (None, "") else d
+
+    return _OpsHttpCfgView(
+        enabled=b(gdb("ops.http.enabled") or genv("OPS_HTTP_ENABLED"), True),
+        host=s(gdb("ops.http.host") or genv("OPS_HTTP_HOST"), "0.0.0.0"),
+        port=i(gdb("ops.http.port") or genv("OPS_HTTP_PORT"), 8080),
+        ready_max_skew_s=f(gdb("ops.http.ready_max_skew_s") or genv("OPS_READY_MAX_SKEW_S"), 15.0),
+    )
+
+
+
+@dataclass
 class _RiskCfgView:
     risk_target_pct: float
     corr_cap_per_side: float
