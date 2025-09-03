@@ -85,6 +85,7 @@ class Orchestrator:
         self.regime = RegimeClassifier(self.symbols, self.regime_interval, RegimeConfig())
 
 
+
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -127,6 +128,7 @@ class Orchestrator:
                 log.debug("[FEATURE_UPDATE] %s %s T=%s", r["symbol"], r["interval"], r["T"])
             time.sleep(period_s)
 
+
     def _regime_loop(self, period_s: float = 0.5) -> None:
         """
         닫힌 봉 기반 피처에서 레짐을 산출하고, 변경 시만 StateBus/알림을 갱신한다.
@@ -154,6 +156,7 @@ class Orchestrator:
                     pass
             time.sleep(period_s)
 
+
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
@@ -173,6 +176,7 @@ class Orchestrator:
         t = threading.Thread(target=self._regime_loop, name="regime", daemon=True)
         t.start()
         self._threads.append(t)
+
 
         # 더미 전략 루프
         st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
