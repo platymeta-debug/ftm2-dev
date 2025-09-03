@@ -65,6 +65,11 @@ try:
 except Exception:  # pragma: no cover
     from signal.forecast import ForecastEnsemble, ForecastConfig  # type: ignore
 
+try:
+    from ftm2.core.config import load_forecast_cfg
+except Exception:  # pragma: no cover
+    from core.config import load_forecast_cfg  # type: ignore
+
 
 
 log = logging.getLogger("ftm2.orch")
@@ -81,21 +86,9 @@ class Orchestrator:
         self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
-
-
         self.bus = StateBus()
         self.cli = BinanceClient.from_env(order_active=False)
         self.streams = StreamManager(self.cli, self.bus, self.symbols, self.kline_intervals, use_mark=True, use_user=True)
-        self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
-        self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
-        self.regime = RegimeClassifier(self.symbols, self.regime_interval, RegimeConfig())
-        self.forecast_interval = getattr(self, "regime_interval", None) or (
-            self.kline_intervals[0] if self.kline_intervals else "5m"
-        )
-        self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, ForecastConfig())
-
-
-
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -103,6 +96,15 @@ class Orchestrator:
             self.db.record_event("INFO", "system", "boot")
         except Exception:
             pass
+
+        self.forecaster = DummyForecaster(self.symbols, self.eval_interval)
+        self.feature_engine = FeatureEngine(self.symbols, self.kline_intervals, FeatureConfig())
+        self.regime = RegimeClassifier(self.symbols, self.regime_interval, RegimeConfig())
+        self.forecast_interval = getattr(self, "regime_interval", None) or (
+            self.kline_intervals[0] if self.kline_intervals else "5m"
+        )
+        init_cfg = load_forecast_cfg(self.db)
+        self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, init_cfg)
 
 
         self._stop = threading.Event()
@@ -167,6 +169,23 @@ class Orchestrator:
             time.sleep(period_s)
 
 
+    def _reload_cfg_loop(self, period_s: float = 10.0) -> None:
+        """
+        DB/ENV에서 예측 파라미터를 주기적으로 재로딩.
+        변경이 감지되면 self.forecast.cfg 를 교체한다.
+        """
+        import dataclasses
+        while not self._stop.is_set():
+            try:
+                new_cfg = load_forecast_cfg(self.db)
+                if dataclasses.asdict(new_cfg) != dataclasses.asdict(self.forecast.cfg):
+                    self.forecast.cfg = new_cfg
+                    log.info("[FORECAST_CFG_RELOAD] 가중치/임계 업데이트 적용: %s", new_cfg)
+            except Exception as e:
+                log.warning("[FORECAST_CFG_RELOAD] 실패: %s", e)
+            time.sleep(period_s)
+
+
     def _forecast_loop(self, period_s: float = 0.5) -> None:
         """
         닫힌 봉 시점에 앙상블 예측을 계산하고 StateBus/DB/알림을 갱신.
@@ -220,6 +239,11 @@ class Orchestrator:
 
         # 예측 루프 시작
         t = threading.Thread(target=self._forecast_loop, name="forecast", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # 설정 핫리로드
+        t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
         t.start()
         self._threads.append(t)
 
