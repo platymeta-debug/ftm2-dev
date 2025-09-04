@@ -18,18 +18,14 @@ def init_db(db_path: str = "./runtime/trader.db") -> sqlite3.Connection:
         """
         CREATE TABLE IF NOT EXISTS config (
             key TEXT PRIMARY KEY
-            -- value column is added below if missing
+            -- val column is added below if missing
         )
         """
     )
-    if not _col_exists(conn, "config", "value"):
-        conn.execute("ALTER TABLE config ADD COLUMN value TEXT")
+    if not _col_exists(conn, "config", "val"):
+        conn.execute("ALTER TABLE config ADD COLUMN val TEXT")
         try:
-            conn.execute("UPDATE config SET value = v WHERE value IS NULL")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("UPDATE config SET value = val WHERE value IS NULL")
+            conn.execute("UPDATE config SET val = value WHERE val IS NULL")
         except sqlite3.OperationalError:
             pass
         conn.commit()

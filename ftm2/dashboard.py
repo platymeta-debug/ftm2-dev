@@ -37,7 +37,7 @@ def _db_path() -> str:
 
 def _cfg_get(conn: sqlite3.Connection, key: str, default=None):
     try:
-        cur = conn.execute("SELECT value FROM config WHERE key=?", (key,))
+        cur = conn.execute("SELECT val FROM config WHERE key=?", (key,))
         row = cur.fetchone()
         return row[0] if row and row[0] is not None else default
     except sqlite3.OperationalError:
@@ -47,9 +47,9 @@ def _cfg_get(conn: sqlite3.Connection, key: str, default=None):
 def _cfg_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
         """
-        INSERT INTO config(key, value)
+        INSERT INTO config(key, val)
         VALUES(?, ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        ON CONFLICT(key) DO UPDATE SET val=excluded.val
         """,
         (key, value),
     )
@@ -86,14 +86,14 @@ async def ensure_dashboard_message(bot, channel_id: int, content_factory):
         allow_pin = os.getenv("DISCORD_ALLOW_PIN", "true").lower() != "false"
         if allow_pin:
             if _cfg_get(conn, "DASHBOARD_PIN_OK") == "0":
-                log.warning("Pin skipped (no permission). Grant 'Manage Messages' or ignore.")
+                log.warning("DASHBOARD: pin skipped (missing permission).")
             else:
                 try:
                     await msg.pin(reason="FTM2 dashboard auto pin")
                     _cfg_set(conn, "DASHBOARD_PIN_OK", "1")
                 except Forbidden:
                     _cfg_set(conn, "DASHBOARD_PIN_OK", "0")
-                    log.warning("Pin skipped (no permission). Grant 'Manage Messages' or ignore.")
+                    log.warning("DASHBOARD: pin skipped (missing permission).")
                 except Exception:
                     log.exception("E_DASHBOARD_PIN_RECOVER")
 
