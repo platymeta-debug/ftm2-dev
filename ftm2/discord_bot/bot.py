@@ -105,6 +105,9 @@ else:
             self.panel: Optional[PanelManager] = None
             self.analysis_pub: Optional[AnalysisPublisher] = None
             self._dash_task_started = False
+            # [ANCHOR:DISCORD_TASKS] begin
+            self._tasks: list[asyncio.Task] = []
+            # [ANCHOR:DISCORD_TASKS] end
 
         # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
@@ -130,6 +133,7 @@ else:
             t = self.analysis_pub.start()
             if t:
                 self.add_bg_task(t, "analysis")
+
             # [ANCHOR:DISCORD_TASKS] end
 
         async def on_app_command_error(self, ia, error: Exception):
@@ -149,7 +153,9 @@ else:
             except Exception:
                 pass
             # [ANCHOR:DISCORD_TASKS] begin
+
             await self.stop_bg_tasks()
+
             try:
                 if hasattr(self, "analysis_pub"):
                     self.analysis_pub.stop()

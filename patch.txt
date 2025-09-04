@@ -94,3 +94,4 @@
 - feat(exec): 라우팅 앞단 실행 가드(패널/ENV 연동)
 - feat(discord): 백그라운드 태스크 레지스트리 및 정상 취소(close 훅)
 
+
