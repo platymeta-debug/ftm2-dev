@@ -377,6 +377,10 @@ class BinanceClient:
             pass
         return _ok(d)
 
+    def klines(self, symbol: str, interval: str, limit: int = 500) -> Dict[str, Any]:
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        return self._http_request("GET", "/v1/klines", params=params)
+
     # ------------------------------------------------------------------
     # REST: signed
     # ------------------------------------------------------------------
