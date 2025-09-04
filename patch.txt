@@ -89,3 +89,9 @@
 - feat(analysis): 실시간 점수/방향 렌더러 고정 및 주기 태스크 정리
 - feat(ops): Equity 동기화 — USER_STREAM 우선, REST 폴백(EQUITY_POLL_SEC)
 
+2025-09-04 v0.3.6
+- feat(panel): 패널 ON/OFF → StateBus·DB upsert 결선(EXEC_ACTIVE)
+- feat(exec): 라우팅 앞단 실행 가드(패널/ENV 연동)
+- feat(discord): 백그라운드 태스크 레지스트리 및 정상 취소(close 훅)
+
+

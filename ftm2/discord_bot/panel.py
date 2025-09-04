@@ -22,13 +22,13 @@ def setup_panel_commands(bot: discord.Client):
             description_localizations={"ko":"컨트롤 패널"},
             guild=GUILD_OBJ)
         async def panel_cmd(ia: discord.Interaction):
-            await ia.response.send_message("컨트롤 패널", view=ControlPanelView(), ephemeral=False)
+            await ia.response.send_message("컨트롤 패널", view=ControlPanelView(bot.bus), ephemeral=False)
     else:
         NAME = app_commands.locale_str("panel", **{"ko":"패널"})
         DESC = app_commands.locale_str("Control panel", **{"ko":"컨트롤 패널"})
         @tree.command(name=NAME, description=DESC, guild=GUILD_OBJ)
         async def panel_cmd(ia: discord.Interaction):
-            await ia.response.send_message("컨트롤 패널", view=ControlPanelView(), ephemeral=False)
+            await ia.response.send_message("컨트롤 패널", view=ControlPanelView(bot.bus), ephemeral=False)
 
     @tree.command(name="routes", description="Show channel routing", guild=GUILD_OBJ)
     async def routes_cmd(ia: discord.Interaction):

@@ -51,7 +51,52 @@ else:
         from analysis.publisher import AnalysisPublisher  # type: ignore
 
 
-    class FTMDiscordBot(commands.Bot):
+    # [ANCHOR:DISCORD_TASKS] begin
+    class TaskRegistryMixin:
+        """봇 내부에서 생성한 백그라운드 태스크를 한 곳에서 관리/종료."""
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._bg_tasks: set[asyncio.Task] = set()
+
+        def add_bg_task(self, coro, name: str):
+            if asyncio.iscoroutine(coro):
+                t = asyncio.create_task(coro, name=name)
+            elif isinstance(coro, asyncio.Task):
+                t = coro
+                t.set_name(name)
+            else:
+                raise TypeError("add_bg_task expects coroutine or Task")
+            self._bg_tasks.add(t)
+
+            def _done(tt: asyncio.Task):
+                self._bg_tasks.discard(tt)
+                try:
+                    exc = tt.exception()
+                except asyncio.CancelledError:
+                    log.info("E_DISCORD_TASK_CANCELLED name=%s", tt.get_name())
+                    return
+                except Exception:
+                    log.exception("E_TASK_DONE_CB")
+                    return
+                if exc:
+                    log.warning("E_TASK_FAIL name=%s err=%r", tt.get_name(), exc)
+
+            t.add_done_callback(_done)
+            return t
+
+        async def stop_bg_tasks(self):
+            if not self._bg_tasks:
+                return
+            for t in list(self._bg_tasks):
+                t.cancel()
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            for t in list(self._bg_tasks):
+                if t.cancelled():
+                    log.info("E_DISCORD_TASK_CANCELLED name=%s", t.get_name())
+            self._bg_tasks.clear()
+    # [ANCHOR:DISCORD_TASKS] end
+
+    class FTMDiscordBot(TaskRegistryMixin, commands.Bot):
         def __init__(self, bus: StateBus) -> None:
             intents = discord.Intents.default()
             super().__init__(command_prefix="!", intents=intents)
@@ -87,7 +132,8 @@ else:
             # [ANCHOR:DISCORD_TASKS] begin
             t = self.analysis_pub.start()
             if t:
-                self._tasks.append(t)
+                self.add_bg_task(t, "analysis")
+
             # [ANCHOR:DISCORD_TASKS] end
 
         async def on_app_command_error(self, ia, error: Exception):
@@ -107,14 +153,9 @@ else:
             except Exception:
                 pass
             # [ANCHOR:DISCORD_TASKS] begin
-            for t in list(self._tasks):
-                t.cancel()
-                try:
-                    await t
-                except Exception:
-                    pass
-            self._tasks.clear()
-            log.info("E_DISCORD_TASK_CANCELLED")
+
+            await self.stop_bg_tasks()
+
             try:
                 if hasattr(self, "analysis_pub"):
                     self.analysis_pub.stop()

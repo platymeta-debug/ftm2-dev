@@ -26,6 +26,19 @@ import logging
 import threading
 from typing import List
 
+# [ANCHOR:STRAT_ROUTE] begin
+def _exec_active_from_env() -> bool:
+    v = os.getenv("EXEC_ACTIVE", "0").strip()
+    return v in ("1", "true", "True", "YES", "yes")
+
+
+def is_exec_enabled(bus) -> bool:
+    try:
+        return bool(getattr(getattr(bus, "config", object()), "exec_active", _exec_active_from_env()))
+    except Exception:
+        return _exec_active_from_env()
+# [ANCHOR:STRAT_ROUTE] end
+
 # 로컬 모듈
 try:
     from ftm2.core.env import load_env_chain
@@ -683,6 +696,12 @@ class Orchestrator:
         """
         while not self._stop.is_set():
             snap = self.bus.snapshot()
+            # [ANCHOR:STRAT_ROUTE] begin
+            if not is_exec_enabled(self.bus):
+                log.info("[EXEC] disabled (source=PANEL|ENV)")
+                time.sleep(period_s)
+                continue
+            # [ANCHOR:STRAT_ROUTE] end
             try:
                 res = self.exec_router.sync(snap)
                 for r in res:
@@ -716,6 +735,10 @@ class Orchestrator:
                 log.warning("[EXEC_ERR] %s", e)
             time.sleep(period_s)
 
+    # [ANCHOR:STRAT_ROUTE] begin
+    async def on_exec_toggle(self, active: bool) -> None:
+        self.exec_router.cfg.active = bool(active)
+    # [ANCHOR:STRAT_ROUTE] end
 
     def _reconcile_loop(self, period_s: float = 0.5) -> None:
         while not self._stop.is_set():
