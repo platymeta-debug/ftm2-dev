@@ -5,7 +5,7 @@ Ops HTTPD: 헬스/레디/메트릭/KPI 노출 (표준 라이브러리만 사용)
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading, time, json, logging
 
 try:
@@ -131,35 +131,39 @@ class _Handler(BaseHTTPRequestHandler):
         kpi = (snap.get("monitor") or {}).get("kpi") or {}
         return self._write(200, json.dumps(kpi, ensure_ascii=False), content_type="application/json; charset=utf-8")
 
-class OpsHTTPD:
+class OpsHttp:
     def __init__(self, bus: StateBus, cfg: OpsHttpConfig) -> None:
         self.bus = bus
         self.cfg = cfg
+        self._srv: Optional[ThreadingHTTPServer] = None
         self._th: Optional[threading.Thread] = None
-        self._stop = threading.Event()
-        self._server: Optional[HTTPServer] = None
+        self._log = log
 
     def start(self) -> None:
         if not self.cfg.enabled:
-            log.info("[OPS_HTTP] disabled")
+            self._log.info("[OPS_HTTP] disabled")
             return
         if self._th and self._th.is_alive():
             return
         _Handler.bus = self.bus
         _Handler.cfg = self.cfg
-        self._server = HTTPServer((self.cfg.host, int(self.cfg.port)), _Handler)
-        self._stop.clear()
-        def _serve():
-            log.info("[OPS_HTTP] start on %s:%s", self.cfg.host, self.cfg.port)
-            try:
-                while not self._stop.is_set():
-                    self._server.handle_request()
-            except Exception as e:
-                log.warning("[OPS_HTTP][ERR] %s", e)
-            log.info("[OPS_HTTP] stop")
-        self._th = threading.Thread(target=_serve, name="ops-http", daemon=True)
+        self._srv = ThreadingHTTPServer((self.cfg.host, int(self.cfg.port)), _Handler)
+        self._th = threading.Thread(target=self._srv.serve_forever,
+                                    name="ops-http", daemon=True)
         self._th.start()
+        self._log.info("[OPS_HTTP] start on %s:%s", self.cfg.host, self.cfg.port)
 
     def stop(self) -> None:
-        self._stop.set()
-        # 더미 요청으로 깨어나게 할 수도 있으나, 데몬 스레드이므로 생략
+        if not self._srv:
+            return
+        try:
+            self._log.info("[OPS_HTTP] stopping ...")
+            self._srv.shutdown()
+            self._srv.server_close()
+            th = self._th
+            self._srv = self._th = None
+            if th and th.is_alive():
+                th.join(timeout=3)
+            self._log.info("[OPS_HTTP] stopped")
+        except Exception as e:  # pragma: no cover
+            self._log.warning("[OPS_HTTP] stop error: %s", e)

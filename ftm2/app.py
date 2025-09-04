@@ -132,10 +132,10 @@ except Exception:  # pragma: no cover
     from discord_bot.notify import enqueue_alert  # type: ignore
 
 try:
-    from ftm2.ops.httpd import OpsHTTPD, OpsHttpConfig
+    from ftm2.ops.http import OpsHttp, OpsHttpConfig
     from ftm2.core.config import load_ops_http_cfg
 except Exception:  # pragma: no cover
-    from ops.httpd import OpsHTTPD, OpsHttpConfig  # type: ignore
+    from ops.http import OpsHttp, OpsHttpConfig  # type: ignore
     from core.config import load_ops_http_cfg  # type: ignore
 
 try:
@@ -300,7 +300,7 @@ class Orchestrator:
             ),
         )
         ohv = load_ops_http_cfg(self.db)
-        self.httpd = OpsHTTPD(self.bus, OpsHttpConfig(
+        self.ops_http = OpsHttp(self.bus, OpsHttpConfig(
             enabled=ohv.enabled,
             host=ohv.host,
             port=int(ohv.port),
@@ -910,12 +910,13 @@ class Orchestrator:
 
 
         # Discord 봇 (토큰 없으면 내부에서 자동 비활성 로그 후 종료)
-        dt = threading.Thread(target=run_discord_bot, args=(self.bus,), name="discord-bot", daemon=True)
-        dt.start()
-        self._threads.append(dt)
+        if (os.getenv("DISCORD_ENABLED", "true").lower() in ("1", "true", "yes")):
+            dt = threading.Thread(target=run_discord_bot, args=(self.bus,), name="discord-bot", daemon=True)
+            dt.start()
+            self._threads.append(dt)
 
         try:
-            self.httpd.start()
+            self.ops_http.start()
         except Exception as e:
             log.warning("[OPS_HTTP] start err: %s", e)
 
@@ -973,11 +974,15 @@ class Orchestrator:
             return
         self._stop.set()
         try:
-            self.streams.stop()
+            self.streams.stop_all()
         except Exception:
             pass
         try:
             self.replay.stop()
+        except Exception:
+            pass
+        try:
+            self.ops_http.stop()
         except Exception:
             pass
         for t in list(self._threads):
