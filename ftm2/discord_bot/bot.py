@@ -107,6 +107,10 @@ else:
     class FTMDiscordBot(TaskRegistryMixin, commands.Bot):
         def __init__(self, bus: StateBus) -> None:
             intents = discord.Intents.default()
+            if hasattr(intents, "message_content"):
+                intents.message_content = True
+            else:
+                log.warning("[DISCORD] Message Content Intent unavailable; check developer portal settings")
             super().__init__(command_prefix="!", intents=intents)
             self.bus = bus
             self.panel: Optional[PanelManager] = None

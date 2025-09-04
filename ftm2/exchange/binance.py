@@ -25,6 +25,23 @@ import concurrent.futures
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any, List
 
+from .http_driver import HttpDriver
+
+_http_drv = HttpDriver()
+
+
+def boot_http() -> None:
+    """Ensure HTTP driver is started."""
+    if _http_drv._mode is None:
+        _http_drv.start()
+
+
+def get_klines(symbol: str, interval: str, limit: int = 600):
+    """Simple REST helper for warmup. Returns raw kline rows."""
+    boot_http()
+    url = "https://fapi.binance.com/fapi/v1/klines"
+    return _http_drv.get(url, params={"symbol": symbol, "interval": interval, "limit": limit})
+
 # -----------------------------------------------------------------------------
 # HTTP drivers (httpx -> requests)
 # -----------------------------------------------------------------------------

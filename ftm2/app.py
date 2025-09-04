@@ -49,11 +49,11 @@ except Exception:  # pragma: no cover
 
 try:
     from ftm2.core.config import load_modes_cfg
-    from ftm2.exchange.binance import BinanceClient
+    from ftm2.exchange.binance import BinanceClient, get_klines
     from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
     from core.config import load_modes_cfg  # type: ignore
-    from exchange.binance import BinanceClient  # type: ignore
+    from exchange.binance import BinanceClient, get_klines  # type: ignore
     from data.streams import StreamManager  # type: ignore
 
 try:
@@ -907,21 +907,21 @@ class Orchestrator:
     def _warmup(self, n: int = 800) -> None:
         for s in self.symbols:
             for tf in self.kline_intervals:
-                r = self.cli_data.klines(s, tf, limit=n)
-                if not r.get("ok"):
-                    log.warning("[WARMUP_FAIL] %s %s %s", s, tf, r.get("error"))
+                try:
+                    rows = get_klines(s, tf, limit=n)
+                except Exception as e:
+                    log.warning("WARMUP_FAIL %s %s %s", s, tf, e)
                     continue
-                rows = r.get("data", [])
-                for row in rows:
+                for r in rows:
                     try:
                         bar = {
-                            "t": int(row[0]),
-                            "T": int(row[6]),
-                            "o": float(row[1]),
-                            "h": float(row[2]),
-                            "l": float(row[3]),
-                            "c": float(row[4]),
-                            "v": float(row[5]),
+                            "t": int(r[0]),
+                            "T": int(r[6]),
+                            "o": float(r[1]),
+                            "h": float(r[2]),
+                            "l": float(r[3]),
+                            "c": float(r[4]),
+                            "v": float(r[5]),
                             "x": True,
                         }
                     except Exception:
