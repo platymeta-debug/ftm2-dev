@@ -70,3 +70,10 @@
 - feat(discord): /panel에 ControlPanelView 부착, /routes /status 제공
 - feat(discord): on_app_command_error 안내(/패널 → /panel), close()에서 task 정리
 
+2025-09-04 v0.6.6
+- feat(discord): PanelManager — PANEL 채널에 고정 메시지+View 상시 유지(핀/재사용/복구)
+- feat(discord): slash /panel ASCII 기반 + ko 로컬라이즈, 길드 즉시 싱크, 에러안내
+- feat(analysis): AnalysisPublisher — 실시간 레짐/마크 요약을 ANALYSIS 채널 핀메시지로 60s 갱신
+- feat(discord): graceful close — dashboard/analysis/panel task 취소 후 close 보장
+- chore(env): 중복키 정리(EXEC_ACTIVE/DB_PATH/DATA_MODE/TRADE_MODE), ANALYSIS_REPORT_SEC 추가
+
