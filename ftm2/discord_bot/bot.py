@@ -67,6 +67,7 @@ else:
             # 초기 대시보드 확보는 on_ready에서
 
         async def on_ready(self) -> None:
+
             log.info("[DISCORD][READY] 로그인: %s (%s)", self.user, self.user and self.user.id)
             try:
                 await self.dashboard.ensure_dashboard_message()

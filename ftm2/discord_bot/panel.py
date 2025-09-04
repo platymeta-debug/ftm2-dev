@@ -6,17 +6,16 @@ import os, inspect
 import discord  # type: ignore
 from discord import app_commands
 
-try:
-    from ftm2.discord_bot.views import ControlPanelView
-except Exception:  # pragma: no cover
-    from discord_bot.views import ControlPanelView  # type: ignore
 
 GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "0") or 0) or None
 GUILD_OBJ = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
+
+
 # 기본 이름은 ASCII만! (입력은 /panel, UI 표시는 로컬라이즈)
 BASE_NAME = "panel"
 BASE_DESC = "Control panel"
+
 
 # 라이브러리 호환: name_localizations/description_localizations 지원 여부 확인
 _SIG = inspect.signature(app_commands.CommandTree.command)
@@ -94,6 +93,7 @@ def setup_panel_commands(bot: discord.Client):
         except Exception as e:  # pragma: no cover
             if hasattr(bot, "logger"):
                 bot.logger.warning("slash sync error: %s", e)
+
 
     return _sync
 
