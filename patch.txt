@@ -94,4 +94,8 @@
 - feat(exec): 라우팅 앞단 실행 가드(패널/ENV 연동)
 - feat(discord): 백그라운드 태스크 레지스트리 및 정상 취소(close 훅)
 
+2025-09-04 v0.3.7
+- feat(streams): WS 종료 병렬화 및 타임아웃(WS_STOP_TIMEOUT_S, WS_STOP_MAX_WORKERS)
+- feat(dashboard): 대시보드 고정(핀) 자동 복구 — DB(config.DASHBOARD_MSG_ID) 연동
+
 

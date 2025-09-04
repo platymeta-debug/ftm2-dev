@@ -11,7 +11,7 @@ import threading
 import time
 from typing import List, Dict, Any, Optional
 
-from ftm2.exchange.binance import BinanceClient, WSHandle
+from ftm2.exchange.binance import BinanceClient, WSHandle, ws_stop_all_parallel
 from ftm2.core.state import StateBus
 
 log = logging.getLogger("ftm2.streams")
@@ -114,11 +114,7 @@ class StreamManager:
             except Exception:
                 pass
         # stop ws handles
-        for h in list(self._handles):
-            try:
-                h.stop(timeout=2.0)
-            except Exception:
-                pass
+        ws_stop_all_parallel()
         self._handles.clear()
 
         if self._keepalive_th and self._keepalive_th.is_alive():

@@ -21,6 +21,7 @@ import json
 import hashlib
 import threading
 import logging
+import concurrent.futures
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any, List
 
@@ -50,6 +51,86 @@ except Exception:  # pragma: no cover
 log = logging.getLogger("binance.client")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+# [ANCHOR:WS_MANAGER] begin
+"""
+웹소켓 종료를 병렬로 처리하여 전체 셧다운 시간을 줄인다.
+- ws_open() 시 register()로 등록
+- stop_all_parallel()로 일괄 종료(타임아웃/로그 포함)
+ENV:
+  WS_STOP_PARALLEL=1        # 1=병렬, 0=직렬
+  WS_STOP_TIMEOUT_S=3       # 각 WS join 타임아웃
+  WS_STOP_MAX_WORKERS=8     # 병렬 종료 스레드 수 한도
+"""
+class _WSHandle:
+    __slots__ = ("url", "closer", "thread")
+
+    def __init__(self, url: str, closer, thread: threading.Thread | None):
+        self.url = url
+        self.closer = closer             # callable: () -> None
+        self.thread = thread             # ws run_forever thread
+
+_WS_REG: dict[str, _WSHandle] = {}
+_WS_LOCK = threading.Lock()
+
+
+def ws_register(url: str, closer, thread: threading.Thread | None):
+    """WS 생성 직후 호출해서 레지스트리에 추가."""
+    h = _WSHandle(url, closer, thread)
+    with _WS_LOCK:
+        _WS_REG[url] = h
+    log.info("[WS OPEN] %s", url)
+
+
+def ws_unregister(url: str):
+    with _WS_LOCK:
+        _WS_REG.pop(url, None)
+
+
+def _close_one(h: _WSHandle, timeout_s: float):
+    try:
+        # idempotent closer (여러 번 불러도 안전)
+        h.closer()
+    except Exception:
+        log.exception("E_WS_CLOSE url=%s", h.url)
+    if h.thread:
+        h.thread.join(timeout=timeout_s)
+        if h.thread.is_alive():
+            log.warning("E_WS_STOP_TIMEOUT url=%s timeout=%.1fs", h.url, timeout_s)
+        else:
+            log.info("[WS STOP] %s", h.url)
+    else:
+        log.info("[WS STOP] %s (no-thread)", h.url)
+
+
+def ws_stop_all_parallel():
+    """등록된 모든 WS를 (옵션) 병렬로 종료한다."""
+    with _WS_LOCK:
+        handles = list(_WS_REG.values())
+        _WS_REG.clear()
+
+    if not handles:
+        log.info("[WS STOPPED] none")
+        return
+
+    timeout_s = float(os.getenv("WS_STOP_TIMEOUT_S", "3").strip() or "3")
+    parallel = os.getenv("WS_STOP_PARALLEL", "1").strip() in ("1", "true", "True", "YES", "yes")
+    max_workers = int(os.getenv("WS_STOP_MAX_WORKERS", "8").strip() or "8")
+    max_workers = max(1, min(max_workers, len(handles)))
+
+    t0 = time.time()
+    if parallel and len(handles) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_close_one, h, timeout_s) for h in handles]
+            concurrent.futures.wait(futs, timeout=timeout_s + 2)
+    else:
+        for h in handles:
+            _close_one(h, timeout_s)
+
+    log.info("[WS STOPPED] all streams closed in %.2fs (n=%d, parallel=%s)",
+             time.time() - t0, len(handles), parallel)
+# [ANCHOR:WS_MANAGER] end
 
 
 def _ok(data: Any) -> Dict[str, Any]:
@@ -393,6 +474,7 @@ class BinanceClient:
             return WSHandle(error=_err("E_WS_DRIVER_MISSING", "websocket-client not installed", url=url))
 
         stop_event = threading.Event()
+        app_ref: Dict[str, Any] = {"app": None}
 
         def _run():
             backoff = 1.0
@@ -427,6 +509,7 @@ class BinanceClient:
                         on_error=_on_error,
                         on_close=_on_close,
                     )
+                    app_ref["app"] = app
                     app.run_forever(ping_interval=20, ping_timeout=10)
                 except Exception as e:  # pragma: no cover
                     log.warning("[WS EXCEPT] %s %s", url, e)
@@ -441,7 +524,22 @@ class BinanceClient:
 
         th = threading.Thread(target=_run, name=f"ws:{url}", daemon=True)
         th.start()
-        return WSHandle(url=url, stop_event=stop_event, thread=th)
+
+        def _closer():
+            stop_event.set()
+            app = app_ref.get("app")
+            if app is not None:
+                try:
+                    app.close()
+                except Exception:
+                    pass
+
+        try:
+            ws_register(url, closer=_closer, thread=th)
+        except Exception:
+            pass
+
+        return WSHandle(url=url, stop_event=stop_event, thread=th, closer=_closer)
 
 
 @dataclass
@@ -449,13 +547,22 @@ class WSHandle:
     url: str = ""
     stop_event: Optional[threading.Event] = None
     thread: Optional[threading.Thread] = None
+    closer: Optional[Callable[[], None]] = None
     error: Optional[Dict[str, Any]] = None
 
     def stop(self, timeout: float = 2.0) -> None:
-        if self.stop_event:
-            self.stop_event.set()
+        if self.closer:
+            try:
+                self.closer()
+            except Exception:
+                pass
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=timeout)
+            if self.thread.is_alive():
+                logging.getLogger("binance.client").warning(
+                    "E_WS_STOP_TIMEOUT url=%s timeout=%.1fs", self.url, timeout
+                )
+        ws_unregister(self.url)
         logging.getLogger("binance.client").info("[WS STOP] %s", self.url)
 
 
