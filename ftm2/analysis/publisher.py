@@ -19,7 +19,12 @@ class AnalysisPublisher:
 
     async def _ensure_msg(self):
         ch_id = int(env_str("DISCORD_CHANNEL_ID_ANALYSIS","0") or "0")
-        if not ch_id: raise RuntimeError("DISCORD_CHANNEL_ID_ANALYSIS not set")
+        if not ch_id:
+            # 폴백: 대시보드 → 패널 순
+            ch_id = int(env_str("DISCORD_CHANNEL_ID_DASHBOARD","0") or "0") \
+                    or int(env_str("DISCORD_CHANNEL_ID_PANEL","0") or "0")
+        if not ch_id:
+            raise RuntimeError("analysis/publisher: no channel id configured")
         ch = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
 
         mid = None
