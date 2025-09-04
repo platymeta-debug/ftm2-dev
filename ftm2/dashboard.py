@@ -134,26 +134,48 @@ def _fmt_number(x: float) -> str:
         return str(x)
 
 
-def render_dashboard(snap: Dict[str, Any]) -> str:
-    marks = snap.get("marks", {})
-    positions = snap.get("positions", {})
-    uptime = int((snap.get("now_ts", 0) - snap.get("boot_ts", 0)) / 1000)
-    lines = [
-        "📊 **실시간 대시보드**",
-        f"• 가동 시간: `{uptime}s`",
-    ]
+def render_dashboard(snapshot: Dict[str, Any]) -> str:
+    """
+    KPI(있으면) + 마크프라이스/업타임을 한 화면에.
+    """
+    lines: list[str] = []
+    mon = snapshot.get("monitor") or {}
+    kpi = mon.get("kpi")
+    if kpi:  # KPI 포함
+        up_min = int((kpi.get("uptime_s") or 0) / 60)
+        reg = kpi.get("regimes") or {}
+        fc  = kpi.get("forecast") or {}
+        eq  = kpi.get("exec_quality") or {}
+        ol  = kpi.get("order_ledger") or {}
+        bar = "─" * 33
+        lines += [
+            "📊 **FTM2 KPI 대시보드**",
+            f"{bar}",
+            f"⏱️ 가동시간: **{up_min}분**",
+            f"💰 자본(Equity): **{kpi.get('equity',0):.2f}**  레버리지: **{kpi.get('lever',0.0):.2f}x**",
+            f"📉 당일손익: **{kpi.get('day_pnl_pct',0.0):.2f}%**  " + ("🛑 데일리컷" if kpi.get("day_cut") else "✅ 정상"),
+            "",
+            f"📐 익스포저: 롱 {kpi.get('used_long',0.0):.1f}% / 숏 {kpi.get('used_short',0.0):.1f}%",
+            f"🧭 레짐: ↑{reg.get('TREND_UP',0)} ↓{reg.get('TREND_DOWN',0)} 高{reg.get('RANGE_HIGH',0)} 低{reg.get('RANGE_LOW',0)}",
+            f"🎯 예측: N={fc.get('n',0)} 강신호={fc.get('strong',0)} 평균스코어={fc.get('avg_score',0.0):.2f}",
+            "",
+            f"⚙️ 실행 품질(최근): 샘플={eq.get('samples',0)}  bps(avg={eq.get('avg_bps',0.0):.2f}, p90={eq.get('p90_bps',0.0):.2f})  "
+            f"넛지={eq.get('nudges',0)}  취소={eq.get('cancels',0)}",
+            f"🧾 주문원장(최근): 주문={ol.get('orders',0)}  체결률={ol.get('fill_rate',0.0)*100:.1f}%  TTF(p50)={ol.get('p50_ttf_ms',0.0):.0f}ms",
+            f"📮 미체결 주문: {kpi.get('open_orders',0)} 건",
+            f"{bar}",
+            "",
+        ]
+    # 마크프라이스 요약(기존 로직 유지)
+    marks = snapshot.get("marks") or {}
     if marks:
         sym_parts = []
         for s, v in marks.items():
-            sym_parts.append(f"{s}: **{_fmt_number(v.get('price', 0.0))}**")
+            sym_parts.append(f"{s} {float(v.get('price') or 0.0):,.2f}")
         lines.append("• 시세(마크프라이스): " + " | ".join(sym_parts))
-    if positions:
-        pos_parts = []
-        for s, p in positions.items():
-            pos_parts.append(
-                f"{s}: 수량 `{_fmt_number(p.get('pa', 0.0))}` / 진입가 `{_fmt_number(p.get('ep',0.0))}` / 평가손익 `{_fmt_number(p.get('up',0.0))}`"
-            )
-        lines.append("• 포지션: " + " | ".join(pos_parts))
+    # KPI가 없고 아무것도 없으면 최소 텍스트
+    if not lines:
+        lines.append("📊 **FTM2 KPI 대시보드**\n(초기화 중…)")
     lines.append("\n_※ 본 메시지는 스팸 방지를 위해 **편집(update)** 방식으로 갱신됩니다._")
     return "\n".join(lines)
 
