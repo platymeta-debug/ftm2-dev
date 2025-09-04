@@ -31,6 +31,7 @@ def main():
     # 기본값(없을 때만)
     os.environ.setdefault("OPS_HTTP_ENABLED", "true")
     os.environ.setdefault("OPS_HTTP_PORT", "8080")
+    os.environ.setdefault("DISCORD_ENABLED", "true")
 
     print("[FTM2] starting... DATA_MODE=%s TRADE_MODE=%s" % (
         os.getenv("DATA_MODE", "live"), os.getenv("TRADE_MODE", "dry")

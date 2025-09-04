@@ -910,9 +910,10 @@ class Orchestrator:
 
 
         # Discord 봇 (토큰 없으면 내부에서 자동 비활성 로그 후 종료)
-        dt = threading.Thread(target=run_discord_bot, args=(self.bus,), name="discord-bot", daemon=True)
-        dt.start()
-        self._threads.append(dt)
+        if (os.getenv("DISCORD_ENABLED", "true").lower() in ("1", "true", "yes")):
+            dt = threading.Thread(target=run_discord_bot, args=(self.bus,), name="discord-bot", daemon=True)
+            dt.start()
+            self._threads.append(dt)
 
         try:
             self.ops_http.start()
@@ -973,7 +974,7 @@ class Orchestrator:
             return
         self._stop.set()
         try:
-            self.streams.stop()
+            self.streams.stop_all()
         except Exception:
             pass
         try:

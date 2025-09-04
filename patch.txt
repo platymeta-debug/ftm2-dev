@@ -59,3 +59,9 @@
 2025-09-03 v0.6.1
 - feat(ops): Ctrl+C 그레이스풀 종료 — OPS HTTP 서버 shutdown/join 추가
 - feat(streams): websocket-client 미설치 시 REST markPrice 폴백(옵션) 지원
+
+2025-09-04 v0.6.3
+- feat(discord): slash 패널 호환화(locale_str) — name_localizations 제거
+- feat(ops): HTTP 서버 shutdown/server_close/join 보강, 종료 로그 '[OPS_HTTP] stopped' 보장
+- feat(env): OPS_HTTP, DISCORD_ENABLED 토글 추가
+

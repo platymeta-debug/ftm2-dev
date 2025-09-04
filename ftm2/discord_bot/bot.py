@@ -58,18 +58,12 @@ else:
             self.dashboard: Optional[DashboardManager] = None
             self._dash_task_started = False
 
+        # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
             # 대시보드 매니저 설치
             self.dashboard = DashboardManager(self)
-            # 패널/명령 등록
-            setup_panel_commands(self)
-
-            # 글로벌 커맨드 동기화
-            try:
-                await self.tree.sync()
-                log.info("[DISCORD] 슬래시 명령 동기화 완료")
-            except Exception as e:  # pragma: no cover
-                log.warning("[DISCORD] 슬래시 동기화 실패: %s", e)
+            sync_fn = setup_panel_commands(self)
+            await sync_fn()
 
         async def on_ready(self) -> None:  # pragma: no cover - 실제 실행 환경 의존
             log.info("[DISCORD][READY] 로그인: %s (%s)", self.user, self.user and self.user.id)

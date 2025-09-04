@@ -137,10 +137,11 @@ class OpsHttp:
         self.cfg = cfg
         self._srv: Optional[ThreadingHTTPServer] = None
         self._th: Optional[threading.Thread] = None
+        self._log = log
 
     def start(self) -> None:
         if not self.cfg.enabled:
-            log.info("[OPS_HTTP] disabled")
+            self._log.info("[OPS_HTTP] disabled")
             return
         if self._th and self._th.is_alive():
             return
@@ -150,17 +151,20 @@ class OpsHttp:
         self._th = threading.Thread(target=self._srv.serve_forever,
                                     name="ops-http", daemon=True)
         self._th.start()
-        log.info("[OPS_HTTP] start on %s:%s", self.cfg.host, self.cfg.port)
+
+        self._log.info("[OPS_HTTP] start on %s:%s", self.cfg.host, self.cfg.port)
 
     def stop(self) -> None:
-        srv, th = self._srv, self._th
-        self._srv = self._th = None
-        if srv:
-            try:
-                srv.shutdown()
-                srv.server_close()
-            except Exception:
-                pass
-        if th and th.is_alive():
-            th.join(timeout=3)
-        log.info("[OPS_HTTP] stop")
+        if not self._srv:
+            return
+        try:
+            self._log.info("[OPS_HTTP] stopping ...")
+            self._srv.shutdown()
+            self._srv.server_close()
+            th = self._th
+            self._srv = self._th = None
+            if th and th.is_alive():
+                th.join(timeout=3)
+            self._log.info("[OPS_HTTP] stopped")
+        except Exception as e:  # pragma: no cover
+            self._log.warning("[OPS_HTTP] stop error: %s", e)
