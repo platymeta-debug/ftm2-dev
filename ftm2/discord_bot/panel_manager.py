@@ -48,13 +48,13 @@ class PanelManager:
             except Exception: msg = None
 
         if msg is None:
-            msg = await ch.send(content, view=ControlPanelView())
+            msg = await ch.send(content, view=ControlPanelView(self.bot.bus))
             try: await msg.pin(reason="FTM2 Control Panel")
             except Exception: pass
             self._save_mid(msg.id)
             self.log.info("[PANEL] created mid=%s", msg.id)
         else:
-            try: await msg.edit(content=content, view=ControlPanelView())
+            try: await msg.edit(content=content, view=ControlPanelView(self.bot.bus))
             except Exception as e: self.log.warning("[PANEL] edit fail: %s", e)
 
         self._msg = msg
@@ -62,7 +62,7 @@ class PanelManager:
 
     async def refresh(self):
         if self._msg: 
-            try: await self._msg.edit(view=ControlPanelView())
+            try: await self._msg.edit(view=ControlPanelView(self.bot.bus))
             except Exception: pass
 
     async def close(self):

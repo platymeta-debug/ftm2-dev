@@ -26,6 +26,19 @@ import logging
 import threading
 from typing import List
 
+# [ANCHOR:STRAT_ROUTE] begin
+def _exec_active_from_env() -> bool:
+    v = os.getenv("EXEC_ACTIVE", "0").strip()
+    return v in ("1", "true", "True", "YES", "yes")
+
+
+def is_exec_enabled(bus) -> bool:
+    try:
+        return bool(getattr(getattr(bus, "config", object()), "exec_active", _exec_active_from_env()))
+    except Exception:
+        return _exec_active_from_env()
+# [ANCHOR:STRAT_ROUTE] end
+
 # 로컬 모듈
 try:
     from ftm2.core.env import load_env_chain
@@ -195,6 +208,11 @@ class Orchestrator:
         )
         init_cfg = load_forecast_cfg(self.db)
         self.forecast = ForecastEnsemble(self.symbols, self.forecast_interval, init_cfg)
+        # [ANCHOR:STRAT_ROUTE] begin
+        self.streams.feature_engine = self.feature_engine
+        self.streams.regime = self.regime
+        self.streams.orch = self
+        # [ANCHOR:STRAT_ROUTE] end
 
         rcfg_view = load_risk_cfg(self.db)
         self.risk = RiskEngine(
@@ -332,6 +350,35 @@ class Orchestrator:
                 self.bus.update_mark(symbol, price, ts)
                 log.debug("[PRICE_POLL] %s price=%s ts=%s", symbol, price, ts)
             time.sleep(interval_s)
+
+    # [ANCHOR:STRAT_ROUTE] begin
+    def on_bar_close(self, sym: str, itv: str, bus) -> None:
+        from ftm2.utils.env import env_str
+        mode = env_str("STRAT_MODE", "ensemble")
+        fallback = ""
+        intent = None
+        if mode == "ensemble":
+            rows = self.forecast.process_snapshot(bus.snapshot())
+            for r in rows:
+                if r.get("symbol") == sym:
+                    fc = r.get("forecast", {})
+                    intent = {
+                        "dir": fc.get("stance", "FLAT"),
+                        "score": float(fc.get("score", 0.0)),
+                        "reason": "ensemble",
+                        "tf": itv,
+                        "ts": int(r.get("T") or 0),
+                    }
+                    break
+        if intent is None:
+            import random, time as _t
+            sc = round(random.uniform(-0.9, 0.9), 1)
+            d = "LONG" if sc > 0 else "SHORT" if sc < 0 else "FLAT"
+            intent = {"dir": d, "score": float(sc), "reason": "dummy", "tf": itv, "ts": int(_t.time() * 1000)}
+            fallback = " (fallback=dummy)"
+        bus.update_intent(sym, intent)
+        log.info("[INTENT] %s %s / %.1f / reason=%s%s", sym, intent["dir"], intent["score"], intent["reason"], fallback)
+    # [ANCHOR:STRAT_ROUTE] end
 
     def _features_loop(self, period_s: float = 0.5) -> None:
         """
@@ -649,6 +696,12 @@ class Orchestrator:
         """
         while not self._stop.is_set():
             snap = self.bus.snapshot()
+            # [ANCHOR:STRAT_ROUTE] begin
+            if not is_exec_enabled(self.bus):
+                log.info("[EXEC] disabled (source=PANEL|ENV)")
+                time.sleep(period_s)
+                continue
+            # [ANCHOR:STRAT_ROUTE] end
             try:
                 res = self.exec_router.sync(snap)
                 for r in res:
@@ -682,6 +735,10 @@ class Orchestrator:
                 log.warning("[EXEC_ERR] %s", e)
             time.sleep(period_s)
 
+    # [ANCHOR:STRAT_ROUTE] begin
+    async def on_exec_toggle(self, active: bool) -> None:
+        self.exec_router.cfg.active = bool(active)
+    # [ANCHOR:STRAT_ROUTE] end
 
     def _reconcile_loop(self, period_s: float = 0.5) -> None:
         while not self._stop.is_set():
@@ -823,19 +880,28 @@ class Orchestrator:
                 log.warning("[KPI] loop err: %s", e)
             time.sleep(max(3.0, float(self.kpi.cfg.report_sec)))
 
+    # [ANCHOR:ORCH_EQUITY_LOOP] begin
     def _equity_loop(self, period_s: int | None = None) -> None:
         period = period_s or env_int("EQUITY_POLL_SEC", 60)
+        backoff = period
         while not self._stop.is_set():
-            eq = None
+            if getattr(self.streams, "_last_account_ts", 0) and time.time() - self.streams._last_account_ts < period:
+                time.sleep(period)
+                continue
             try:
-                eq = self.cli_trade.get_equity()
-            except Exception:
-                eq = None
-            if isinstance(eq, (int, float)) and eq > 0:
-                cur = self.bus.snapshot().get("account") or {}
-                self.bus.set_account({**cur, "totalWalletBalance": eq})
-                log.info("[EQUITY] updated: %.2f", eq)
-            time.sleep(max(5, period))
+                bal = self.cli_trade.get_balance_usdt()
+                wb = float(bal.get("wallet", 0.0))
+                cw = float(bal.get("avail", 0.0))
+                self.bus.set_account({"ccy": "USDT", "totalWalletBalance": wb, "availableBalance": cw})
+                log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=REST", wb, cw)
+                backoff = period
+            except Exception as e:
+                log.warning("E_BAL_POLL_FAIL code=%s msg=%s backoff=%ss", getattr(e, "code", ""), getattr(e, "msg", str(e)), backoff)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, period * 5)
+                continue
+            time.sleep(period)
+    # [ANCHOR:ORCH_EQUITY_LOOP] end
 
 
 
