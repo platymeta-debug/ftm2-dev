@@ -13,6 +13,7 @@ import logging
 from typing import Dict, Any, Optional
 
 import discord  # type: ignore
+from ftm2.utils.env import env_str
 
 log = logging.getLogger("ftm2.dashboard")
 if not log.handlers:
@@ -69,33 +70,40 @@ def _render_dashboard(snap: Dict[str, Any]) -> str:
 class DashboardManager:
     def __init__(self, bot: discord.Client) -> None:
         self.bot = bot
-        self.channel_id = int(os.getenv("CHAN_DASHBOARD_ID") or "0")
+        self.log = log
         self._msg: Optional[discord.Message] = None
 
-    async def ensure_dashboard_message(self) -> None:
-        if not self.channel_id:
-            log.warning("[대시보드] CHAN_DASHBOARD_ID 가 비어 있습니다.")
-            return
-        ch = self.bot.get_channel(self.channel_id)
-        if ch is None:
-            ch = await self.bot.fetch_channel(self.channel_id)
+    def _load_mid(self) -> Optional[int]:
+        return _load_msg_id()
 
-        # 기존 메시지 재사용 시도
-        mid = _load_msg_id()
+    def _save_mid(self, mid: int) -> None:
+        _save_msg_id(mid)
+
+    async def ensure_dashboard_message(self) -> discord.Message:
+        ch_id = int(env_str("DISCORD_CHANNEL_ID_DASHBOARD", "0") or "0")
+        ch = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
+
+        mid = self._load_mid()
+        msg: Optional[discord.Message] = None
         if mid:
             try:
                 msg = await ch.fetch_message(mid)  # type: ignore
-                self._msg = msg
-                log.info("[대시보드] 기존 메시지 재사용(mid=%s)", mid)
-                return
+                self.log.info("[대시보드] 기존 메시지 재사용(mid=%s)", mid)
+            except Exception:
+                msg = None
+
+        if msg is None:
+            init_text = "📊 **FTM2 KPI 대시보드** (초기화 중)"
+            msg = await ch.send(init_text)
+            try:
+                await msg.pin(reason="FTM2 Dashboard")
             except Exception:
                 pass
+            self._save_mid(msg.id)
+            self.log.info("[대시보드] 신규 생성(mid=%s)", msg.id)
 
-        # 신규 생성
-        msg = await ch.send("대시보드를 초기화하는 중입니다…")
         self._msg = msg
-        _save_msg_id(msg.id)
-        await msg.edit(content="📊 **실시간 대시보드**\n초기화 완료. 곧 데이터가 표시됩니다.")
+        return msg
 
     async def update(self, snapshot: Dict[str, Any]) -> None:
         if not self._msg:

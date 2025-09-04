@@ -310,6 +310,22 @@ class BinanceClient:
         # v2/positionRisk 는 심볼 미지정 시 전체 반환
         return self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
 
+    # [ANCHOR:BINANCE_CLIENT_BAL]
+    def get_equity(self) -> Optional[float]:
+        if not self.key or not self.secret:
+            return None
+        r = self._http_request("GET", "/v2/balance", signed=True)
+        if not r.get("ok"):
+            return None
+        data = r.get("data") or []
+        usdt = next((x for x in data if x.get("asset") == "USDT"), None)
+        if not usdt:
+            return None
+        try:
+            return float(usdt.get("balance") or usdt.get("crossWalletBalance"))
+        except Exception:
+            return None
+
     def create_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         주문 스텁: 기본은 실제 전송하지 않고 E_ORDER_STUB 반환.

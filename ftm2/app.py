@@ -81,6 +81,11 @@ except Exception:  # pragma: no cover
     from core.config import load_forecast_cfg, load_risk_cfg  # type: ignore
 
 try:
+    from ftm2.utils.env import env_str, env_list, env_int, env_bool
+except Exception:  # pragma: no cover
+    from utils.env import env_str, env_list, env_int, env_bool  # type: ignore
+
+try:
     from ftm2.trade.router import OrderRouter, ExecConfig
     from ftm2.core.config import load_exec_cfg
 except Exception:  # pragma: no cover
@@ -153,10 +158,10 @@ if not log.handlers:
 class Orchestrator:
     def __init__(self) -> None:
         self.env = load_env_chain()
-        self.mode = (os.getenv("MODE") or "testnet").lower()
-        self.symbols: List[str] = [s.strip() for s in (os.getenv("SYMBOLS") or "BTCUSDT,ETHUSDT").split(",") if s.strip()]
-        self.tf_exec = os.getenv("TF_EXEC") or "1m"
-        self.kline_intervals = [s.strip() for s in (os.getenv("TF_SIGNAL") or "5m,15m,1h,4h").split(",") if s.strip()]
+        self.mode = env_str("MODE", "testnet").lower()
+        self.symbols: List[str] = env_list("SYMBOLS") or ["BTCUSDT", "ETHUSDT"]
+        self.tf_exec = env_str("TF_EXEC", "1m")
+        self.kline_intervals = env_list("TF_SIGNAL") or ["5m", "15m", "1h", "4h"]
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.bus = StateBus()
@@ -818,6 +823,20 @@ class Orchestrator:
                 log.warning("[KPI] loop err: %s", e)
             time.sleep(max(3.0, float(self.kpi.cfg.report_sec)))
 
+    def _equity_loop(self, period_s: int | None = None) -> None:
+        period = period_s or env_int("EQUITY_POLL_SEC", 60)
+        while not self._stop.is_set():
+            eq = None
+            try:
+                eq = self.cli_trade.get_equity()
+            except Exception:
+                eq = None
+            if isinstance(eq, (int, float)) and eq > 0:
+                cur = self.bus.snapshot().get("account") or {}
+                self.bus.set_account({**cur, "totalWalletBalance": eq})
+                log.info("[EQUITY] updated: %.2f", eq)
+            time.sleep(max(5, period))
+
 
 
     def start(self) -> None:
@@ -889,6 +908,11 @@ class Orchestrator:
 
         # KPI 루프 시작
         t = threading.Thread(target=self._kpi_loop, name="kpi", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # Equity 폴링 루프 시작
+        t = threading.Thread(target=self._equity_loop, name="equity-poll", daemon=True)
         t.start()
         self._threads.append(t)
 
