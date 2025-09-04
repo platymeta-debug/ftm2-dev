@@ -43,14 +43,12 @@ else:
         from ftm2.discord_bot.panel import setup_panel_commands
         from ftm2.discord_bot.panel_manager import PanelManager
         from ftm2.analysis.publisher import AnalysisPublisher
-        from ftm2.utils.env import env_int
 
     except Exception:  # pragma: no cover
         from discord_bot.dashboards import DashboardManager  # type: ignore
         from discord_bot.panel import setup_panel_commands  # type: ignore
         from discord_bot.panel_manager import PanelManager  # type: ignore
         from analysis.publisher import AnalysisPublisher  # type: ignore
-        from utils.env import env_int  # type: ignore
 
 
     class FTMDiscordBot(commands.Bot):
@@ -62,6 +60,9 @@ else:
             self.panel: Optional[PanelManager] = None
             self.analysis_pub: Optional[AnalysisPublisher] = None
             self._dash_task_started = False
+            # [ANCHOR:DISCORD_TASKS] begin
+            self._tasks: list[asyncio.Task] = []
+            # [ANCHOR:DISCORD_TASKS] end
 
         # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
@@ -69,9 +70,10 @@ else:
             await sync_fn()
             self.panel = PanelManager(self)
             self.dashboard = DashboardManager(self)
-            self.analysis_pub = AnalysisPublisher(
-                self, self.bus, interval_s=env_int("ANALYSIS_REPORT_SEC", 60)
-            )
+            # [ANCHOR:DISCORD_TASKS] begin
+            interval = int(os.getenv("ANALYSIS_REPORT_SEC", "60").strip())
+            self.analysis_pub = AnalysisPublisher(self, self.bus, interval_s=interval)
+            # [ANCHOR:DISCORD_TASKS] end
 
 
         async def on_ready(self) -> None:
@@ -82,7 +84,11 @@ else:
             if not getattr(self, "_dash_task_started", False):
                 self._dash_task_started = True
                 self._update_dashboard.start()
-            self.analysis_pub.start()
+            # [ANCHOR:DISCORD_TASKS] begin
+            t = self.analysis_pub.start()
+            if t:
+                self._tasks.append(t)
+            # [ANCHOR:DISCORD_TASKS] end
 
         async def on_app_command_error(self, ia, error: Exception):
             from discord.app_commands.errors import CommandNotFound
@@ -100,6 +106,15 @@ else:
                     self._update_dashboard.cancel()
             except Exception:
                 pass
+            # [ANCHOR:DISCORD_TASKS] begin
+            for t in list(self._tasks):
+                t.cancel()
+                try:
+                    await t
+                except Exception:
+                    pass
+            self._tasks.clear()
+            log.info("E_DISCORD_TASK_CANCELLED")
             try:
                 if hasattr(self, "analysis_pub"):
                     self.analysis_pub.stop()
@@ -110,16 +125,7 @@ else:
                     await self.panel.close()
             except Exception:
                 pass
-            try:
-                if hasattr(self, "analysis_pub") and self.analysis_pub:
-                    self.analysis_pub.stop()
-            except Exception:
-                pass
-            try:
-                if hasattr(self, "panel") and self.panel:
-                    await self.panel.close()
-            except Exception:
-                pass
+            # [ANCHOR:DISCORD_TASKS] end
             try:
                 await super().close()
             finally:

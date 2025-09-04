@@ -203,3 +203,29 @@ class RegimeClassifier:
                 log.debug("[REGIME] %s %s age=%d (ema=%.5f rv_pr=%.3f)", sym, code, regime["age"], ema_spread, rv_pr)
 
         return out
+
+    # [ANCHOR:REGIME_UPDATE] begin
+    def update(self, sym: str, itv: str, bus) -> None:
+        feats = bus.snapshot().get("features", {}).get((sym, itv))
+        if not feats:
+            return
+        ema_f = float(feats.get("ema_fast", 0.0))
+        ema_s = float(feats.get("ema_slow", 0.0)) or 1e-12
+        ema_spread = (ema_f - ema_s) / ema_s
+        rv_pr = float(feats.get("pr_rv20", 0.5))
+        code = "FLAT"
+        if ema_spread >= 0.001:
+            code = "TREND_UP"
+        elif ema_spread <= -0.001:
+            code = "TREND_DOWN"
+        elif rv_pr >= 0.6:
+            code = "RANGE_HIGH"
+        elif rv_pr <= 0.4:
+            code = "RANGE_LOW"
+        prev = self._regime_code.get(sym)
+        self._regime_code[sym] = code
+        regime = {"code": code, "ema": float(ema_spread), "rv_pr": rv_pr, "ts": int(feats.get("ts") or 0)}
+        bus.update_regime(sym, itv, regime)
+        if prev != code:
+            log.info("[REGIME_CHANGE] %s %s → %s (ema=%.5f rv_pr=%.3f)", sym, prev, code, ema_spread, rv_pr)
+    # [ANCHOR:REGIME_UPDATE] end
