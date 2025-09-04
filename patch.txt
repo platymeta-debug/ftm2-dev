@@ -10,7 +10,7 @@
 # - feat(scope): 한글 요약 …
 #
 # M2 이후 릴리스 예시 템플릿(참고용):
-# 2025-09-10 v0.2.0
+# 2025-09-03 v0.2.0
 # - feat(features): 피처 파이프라인 1차(지표 계산/NaN 처리/퍼센타일 캐시)
 # - feat(regime): 레짐 분류기(EMA 스프레드·RV 백분위·히스테리시스)
 # - feat(forecast): 예측 앙상블/스코어링(트렌드·MR·크로스 가중)
@@ -22,12 +22,12 @@
 - feat(discord): 한글 슬래시 명령, 대시보드 자동 갱신, 컨트롤 패널 스켈레톤
 - feat(persistence): SQLite 스켈레톤 — WAL, 스키마(trades/positions/pnl_daily/config/events/patches) 및 쓰기 유틸
 - feat(strategy): 더미 포캐스트 & 스카웃 드라이런 — 콘솔/DB/디스코드 알림
-2025-09-10 v0.2.0
+2025-09-03 v0.2.0
 - feat(features): 닫힌 봉 기반 피처 엔진(EMA/ATR/RSI/수익률/RV/퍼센타일) 추가 및 StateBus 연동
 - feat(regime): EMA 스프레드·RV 백분위 기반 레짐 분류기(히스테리시스/최소 지속 바) 추가 및 StateBus/알림 연동
 - feat(forecast): 레짐별 가중 앙상블(추세/MR/크로스) + 온라인 성과(λ)로 미세 조정, 확률/스코어 산출 및 StateBus/알림 연동
 - feat(risk): ATR-unit 사이징, 사이드 상관캡, 데일리컷을 갖춘 리스크 엔진 추가 — ENV/DB 로드 및 버스/알림 연동
-2025-09-15 v0.3.0
+2025-09-03 v0.3.0
 - feat(exec): 타깃→주문 라우터 추가(쿨다운/허용오차/LOT_STEP·MIN_NOTIONAL/ReduceOnly/드라이런·실주문 토글) 및 핫리로드 연동
 - feat(reconcile): 유저스트림 체결 수집→DB 기록, 슬리피지 경고/알림, 타깃-포지션 정체 시 라우터 넛지(쿨다운 해제) 추가
 - feat(protect): ε-잔차 리포트(목표-포지션 불일치 보고) 및 부분체결 타임아웃 자동 취소 추가
@@ -37,14 +37,14 @@
 - feat(order_ledger): 주문 원장/이벤트 테이블(orders/order_events) 추가 및 제출·체결 업데이트 적재, 윈도우 체결률/TTF·취소율 리포트
 - feat(kpi): 전략·리스크·실행 품질 KPI 리포터 추가 — 콘솔/디스코드 한국어 패널, StateBus.monitor.kpi 반영 및 핫리로드
 
-2025-09-18 v0.4.0
+2025-09-03 v0.4.0
 - feat(replay): ndjson/CSV 캡처 재생 엔진 추가 — 속도배율/루프 지원, StateBus mark/kline 주입
 - feat(backtest): CSV 기반 통합 백테스트 러너 추가 — 더미 예측+RiskEngine→체결 시뮬, trades/equity/pnl CSV 출력 및 CLI
 - feat(modes): 데이터/트레이드 듀얼 모드 추가 — DATA_MODE(live|testnet|replay) + TRADE_MODE(dry|testnet|live)
 - feat(streams): 공개 데이터와 유저스트림 클라이언트 분리 주입 지원
 - feat(app): 하이브리드 결선(live 차트 + testnet 주문) 기본 시나리오 추가
 
-2025-09-19 v0.4.1
+2025-09-03 v0.4.1
 - feat(strategy-adapter): 백테스트/리플레이에 실전 ForecastEnsemble 주입 가능하도록 어댑터 계층 추가(STRAT_MODE/CLASS/PARAMS)
 - feat(backtest): 러너가 어댑터를 통해 예측을 생성하도록 변경(스냅샷 호환 유지)
 - feat(ops): 운영 HTTP 엔드포인트 추가 — /healthz /readyz /metrics /kpi (Prometheus 호환), ENV/DB 설정 및 앱 결선
@@ -53,7 +53,7 @@
 - feat(logging): 로테이션 파일 로그 + 콘솔 로그 설정 모듈 도입(LOG_* ENV)
 - feat(ops): 운영 HTTP 엔드포인트 추가 — /healthz /readyz /metrics /kpi (Prometheus 호환), ENV/DB 설정 및 앱 결선 Sentry DSN 제공 시 자동 초기화(선택)
 
-2025-09-20 v0.4.2
+2025-09-03 v0.4.2
 - feat(ops): Preflight Doctor — 라이브/테스트넷 핑, DB 쓰기, 듀얼 모드 유효성, /healthz/포트 점검 CLI
 
 2025-09-03 v0.6.1
@@ -64,4 +64,9 @@
 - feat(discord): slash 패널 호환화(locale_str) — name_localizations 제거
 - feat(ops): HTTP 서버 shutdown/server_close/join 보강, 종료 로그 '[OPS_HTTP] stopped' 보장
 - feat(env): OPS_HTTP, DISCORD_ENABLED 토글 추가
+
+2025-09-04 v0.6.5
+- feat(discord): 슬래시 기본 이름 ASCII(/panel) + 한국어 표시 로컬라이즈, 길드 즉시 싱크
+- feat(discord): /panel에 ControlPanelView 부착, /routes /status 제공
+- feat(discord): on_app_command_error 안내(/패널 → /panel), close()에서 task 정리
 

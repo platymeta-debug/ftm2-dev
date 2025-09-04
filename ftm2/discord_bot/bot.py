@@ -60,24 +60,56 @@ else:
 
         # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
-            # 대시보드 매니저 설치
+            # 대시보드 매니저 설치/초기 메시지 확보
             self.dashboard = DashboardManager(self)
             sync_fn = setup_panel_commands(self)
-            await sync_fn()
+            await sync_fn()  # 길드 싱크 확정
+            # 초기 대시보드 확보는 on_ready에서
 
-        async def on_ready(self) -> None:  # pragma: no cover - 실제 실행 환경 의존
+        async def on_ready(self) -> None:
+
             log.info("[DISCORD][READY] 로그인: %s (%s)", self.user, self.user and self.user.id)
-            # 대시보드 초기 메시지 확보
             try:
                 await self.dashboard.ensure_dashboard_message()
             except Exception as e:
                 log.warning("[대시보드] 초기화 실패: %s", e)
-
-            # 대시보드 업데이트 루프 시작
-            if not self._dash_task_started:
+            # 주기 루프 시작(중복 스타트 방지)
+            if not getattr(self, "_dash_task_started", False):
                 self._dash_task_started = True
                 self._update_dashboard.start()
+                # 알림 펌프 루프가 있다면 여기도 start()
                 self._pump_alerts.start()
+
+        async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
+            # 사용자가 /패널 입력 시 CommandNotFound → 안내
+            try:
+                from discord.app_commands.errors import CommandNotFound
+                if isinstance(error, CommandNotFound):
+                    await interaction.response.send_message(
+                        "명령을 찾을 수 없습니다. 입력은 `/panel` 입니다. (표시는 **패널**)",
+                        ephemeral=True,
+                    )
+                    return
+            except Exception:
+                pass
+            log.warning("[DISCORD][CMD_ERROR] %s", error)
+
+        async def close(self) -> None:
+            # task 루프들 안전 종료
+            try:
+                if hasattr(self, "_update_dashboard"):
+                    self._update_dashboard.cancel()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_pump_alerts"):
+                    self._pump_alerts.cancel()
+            except Exception:
+                pass
+            try:
+                await super().close()
+            finally:
+                log.info("[DISCORD] closed")
 
 
         @tasks.loop(seconds=15)
