@@ -46,9 +46,13 @@ else:
     try:
         from ftm2.discord_bot.dashboards import DashboardManager
         from ftm2.discord_bot.panel import setup_panel_commands
+        from ftm2.discord_bot.panel_manager import PanelManager
+        from ftm2.analysis.publisher import AnalysisPublisher
     except Exception:  # pragma: no cover
         from discord_bot.dashboards import DashboardManager  # type: ignore
         from discord_bot.panel import setup_panel_commands  # type: ignore
+        from discord_bot.panel_manager import PanelManager  # type: ignore
+        from analysis.publisher import AnalysisPublisher  # type: ignore
 
     class FTMDiscordBot(commands.Bot):
         def __init__(self, bus: StateBus) -> None:
@@ -56,15 +60,20 @@ else:
             super().__init__(command_prefix="!", intents=intents)
             self.bus = bus
             self.dashboard: Optional[DashboardManager] = None
+            self.panel: Optional[PanelManager] = None
+            self.analysis_pub: Optional[AnalysisPublisher] = None
             self._dash_task_started = False
 
         # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
-            # 대시보드 매니저 설치/초기 메시지 확보
-            self.dashboard = DashboardManager(self)
             sync_fn = setup_panel_commands(self)
             await sync_fn()  # 길드 싱크 확정
-            # 초기 대시보드 확보는 on_ready에서
+            self.panel = PanelManager(self)
+            self.dashboard = DashboardManager(self)
+            self.analysis_pub = AnalysisPublisher(
+                self, self.bus, interval_s=int(os.getenv("ANALYSIS_REPORT_SEC", "60"))
+            )
+            # 초기 대시보드/패널 확보는 on_ready에서
 
         async def on_ready(self) -> None:
 
@@ -73,6 +82,15 @@ else:
                 await self.dashboard.ensure_dashboard_message()
             except Exception as e:
                 log.warning("[대시보드] 초기화 실패: %s", e)
+            try:
+                await self.panel.ensure_panel_message()
+            except Exception as e:
+                log.warning("[패널] 초기화 실패: %s", e)
+            try:
+                if self.analysis_pub:
+                    self.analysis_pub.start()
+            except Exception as e:
+                log.warning("[ANALYSIS] start 실패: %s", e)
             # 주기 루프 시작(중복 스타트 방지)
             if not getattr(self, "_dash_task_started", False):
                 self._dash_task_started = True
@@ -104,6 +122,16 @@ else:
             try:
                 if hasattr(self, "_pump_alerts"):
                     self._pump_alerts.cancel()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "analysis_pub") and self.analysis_pub:
+                    self.analysis_pub.stop()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "panel") and self.panel:
+                    await self.panel.close()
             except Exception:
                 pass
             try:
