@@ -77,3 +77,10 @@
 - feat(discord): graceful close — dashboard/analysis/panel task 취소 후 close 보장
 - chore(env): 중복키 정리(EXEC_ACTIVE/DB_PATH/DATA_MODE/TRADE_MODE), ANALYSIS_REPORT_SEC 추가
 
+2025-09-04 v0.6.8
+- feat(analysis): 분석 리포트에 심볼 자동 보강(marks→keys), 점수/방향 다중 경로 추출
+- feat(dashboard): 저장된 메시지 채널 불일치 시 자동 재생성(핀/ID 갱신)
+- feat(connector): Binance USDⓈ-M 테스트넷 잔액 폴링 → equity 반영(EQUITY_POLL_SEC)
+- feat(env): env_int/env_bool/env_list 적용으로 인라인 주석 허용
+- chore(discord): /routes로 라우팅 점검(기 설치 확인)
+
