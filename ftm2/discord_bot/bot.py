@@ -114,6 +114,7 @@ else:
             self._dash_task_started = False
             self._dash_channel = int(os.getenv("DISCORD_CHANNEL_ID_DASHBOARD", "0") or "0")
 
+
         # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
             sync_fn = setup_panel_commands(self)
@@ -124,6 +125,7 @@ else:
                     return "📊 **FTM2 KPI 대시보드**\n(초기화 중…)"
                 await ensure_dashboard_message(self, self._dash_channel, render_first)
             self.add_bg_task(_init_dashboard(), "dashboard_pin_recover")
+
             # [ANCHOR:DISCORD_TASKS] begin
             interval = int(os.getenv("ANALYSIS_REPORT_SEC", "60").strip())
             self.analysis_pub = AnalysisPublisher(self, self.bus, interval_s=interval)
@@ -141,6 +143,7 @@ else:
             t = self.analysis_pub.start()
             if t:
                 self.add_bg_task(t, "analysis")
+
             # [ANCHOR:DISCORD_TASKS] end
 
         async def on_app_command_error(self, ia, error: Exception):
@@ -161,6 +164,7 @@ else:
                 pass
             # [ANCHOR:DISCORD_TASKS] begin
             await self.stop_bg_tasks()
+
             try:
                 if hasattr(self, "analysis_pub"):
                     self.analysis_pub.stop()
