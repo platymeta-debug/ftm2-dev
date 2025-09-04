@@ -44,12 +44,14 @@ else:
         from ftm2.discord_bot.panel_manager import PanelManager
         from ftm2.analysis.publisher import AnalysisPublisher
         from ftm2.utils.env import env_int
+
     except Exception:  # pragma: no cover
         from discord_bot.dashboards import DashboardManager  # type: ignore
         from discord_bot.panel import setup_panel_commands  # type: ignore
         from discord_bot.panel_manager import PanelManager  # type: ignore
         from analysis.publisher import AnalysisPublisher  # type: ignore
         from utils.env import env_int  # type: ignore
+
 
     class FTMDiscordBot(commands.Bot):
         def __init__(self, bus: StateBus) -> None:
@@ -71,10 +73,12 @@ else:
                 self, self.bus, interval_s=env_int("ANALYSIS_REPORT_SEC", 60)
             )
 
+
         async def on_ready(self) -> None:
             log.info("[DISCORD][READY] 로그인: %s (%s)", self.user, self.user and self.user.id)
             await self.dashboard.ensure_dashboard_message()
             await self.panel.ensure_panel_message()
+
             if not getattr(self, "_dash_task_started", False):
                 self._dash_task_started = True
                 self._update_dashboard.start()
@@ -103,6 +107,16 @@ else:
                 pass
             try:
                 if hasattr(self, "panel"):
+                    await self.panel.close()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "analysis_pub") and self.analysis_pub:
+                    self.analysis_pub.stop()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "panel") and self.panel:
                     await self.panel.close()
             except Exception:
                 pass

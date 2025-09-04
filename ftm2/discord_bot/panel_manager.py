@@ -7,6 +7,7 @@ import discord
 from ftm2.utils.env import env_str
 from ftm2.discord_bot.views import ControlPanelView
 
+
 class PanelManager:
     def __init__(self, bot: discord.Client):
         self.bot = bot
@@ -20,6 +21,7 @@ class PanelManager:
                 return json.loads(self.path.read_text(encoding="utf-8")).get("mid")
         except Exception:
             pass
+
         return None
 
     def _save_mid(self, mid: int):
@@ -28,11 +30,13 @@ class PanelManager:
 
     async def ensure_panel_message(self):
         ch_id = int(env_str("DISCORD_CHANNEL_ID_PANEL","0") or "0")
+
         if not ch_id:
             raise RuntimeError("DISCORD_CHANNEL_ID_PANEL not set")
         ch = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
 
         mid = self._load_mid()
+
         content = (
             "🎛️ **컨트롤 패널**\n"
             "• 이 메시지는 고정이며 버튼으로 봇을 제어합니다.\n"
@@ -52,6 +56,7 @@ class PanelManager:
         else:
             try: await msg.edit(content=content, view=ControlPanelView())
             except Exception as e: self.log.warning("[PANEL] edit fail: %s", e)
+
         self._msg = msg
         return msg
 
@@ -65,3 +70,4 @@ class PanelManager:
         try:
             if self._msg: await self._msg.edit(view=None)
         except Exception: pass
+

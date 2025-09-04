@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Discord 실시간 분석 리포트 발행"""
 # [ANCHOR:ANALYSIS_PUB]
+
 import json, time, asyncio
 from pathlib import Path
 import discord, logging
@@ -54,12 +55,14 @@ class AnalysisPublisher:
         lines.append("_※ 데이터: live, 트레이딩: testnet_")
         return "\n".join(lines)
 
+
     async def _loop(self):
         await self._ensure_msg()
         while True:
             try:
                 snap = self.bot.bus.snapshot() if hasattr(self.bot,"bus") else {}
                 await self._msg.edit(content=self._render(snap))
+
                 self.log.info("[ANALYSIS] 업데이트 완료")
             except Exception as e:
                 self.log.warning("[ANALYSIS] 업데이트 오류: %s", e)
