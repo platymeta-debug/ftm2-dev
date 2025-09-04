@@ -64,8 +64,8 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-# ----------------------------------------------------------------------------- 
-# [ANCHOR:BINANCE_CLIENT]
+# -----------------------------------------------------------------------------
+# [ANCHOR:BINANCE_CLIENT] begin
 # -----------------------------------------------------------------------------
 class BinanceClient:
     """
@@ -310,6 +310,20 @@ class BinanceClient:
         # v2/positionRisk 는 심볼 미지정 시 전체 반환
         return self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
 
+    def get_balance_usdt(self) -> Dict[str, float]:
+        if not self.key or not self.secret:
+            raise RuntimeError("NO_API_KEY")
+        r = self._http_request("GET", "/v2/balance", signed=True)
+        if not r.get("ok"):
+            err = r.get("error", {})
+            raise RuntimeError(err.get("code", "E_BAL"))
+        for b in r.get("data", []):
+            if b.get("asset") == "USDT":
+                wb = float(b.get("balance") or b.get("wb") or 0.0)
+                cw = float(b.get("crossWalletBalance") or b.get("cw") or 0.0)
+                return {"wallet": wb, "avail": cw}
+        raise RuntimeError("USDT_NOT_FOUND")
+
     # [ANCHOR:BINANCE_CLIENT_BAL]
     def get_equity(self) -> Optional[float]:
         if not self.key or not self.secret:
@@ -337,6 +351,7 @@ class BinanceClient:
         if not self.order_active:
             return _err("E_ORDER_STUB", "order endpoint is stubbed (disabled)", payload=payload)
         return self._http_request("POST", "/v1/order", params=payload, signed=True)
+# [ANCHOR:BINANCE_CLIENT] end
 
     # ------------------------------------------------------------------
     # User Data Stream (listenKey)
