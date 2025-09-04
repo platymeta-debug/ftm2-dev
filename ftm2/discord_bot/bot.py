@@ -7,7 +7,6 @@ Discord Bot Runner (스켈레톤)
 from __future__ import annotations
 
 import os
-import json
 import asyncio
 import logging
 from typing import Optional
@@ -25,10 +24,6 @@ try:
 except Exception:  # pragma: no cover
     from core.state import StateBus  # type: ignore
 
-try:  # runtime alerts queue
-    from ftm2.discord_bot.notify import QUEUE as ALERTS_QUEUE
-except Exception:  # pragma: no cover
-    from discord_bot.notify import QUEUE as ALERTS_QUEUE  # type: ignore
 
 
 log = logging.getLogger("ftm2.discord")
@@ -48,11 +43,15 @@ else:
         from ftm2.discord_bot.panel import setup_panel_commands
         from ftm2.discord_bot.panel_manager import PanelManager
         from ftm2.analysis.publisher import AnalysisPublisher
+        from ftm2.utils.env import env_int
+
     except Exception:  # pragma: no cover
         from discord_bot.dashboards import DashboardManager  # type: ignore
         from discord_bot.panel import setup_panel_commands  # type: ignore
         from discord_bot.panel_manager import PanelManager  # type: ignore
         from analysis.publisher import AnalysisPublisher  # type: ignore
+        from utils.env import env_int  # type: ignore
+
 
     class FTMDiscordBot(commands.Bot):
         def __init__(self, bus: StateBus) -> None:
@@ -67,61 +66,48 @@ else:
         # [ANCHOR:DISCORD_BOT]
         async def setup_hook(self) -> None:
             sync_fn = setup_panel_commands(self)
-            await sync_fn()  # 길드 싱크 확정
+            await sync_fn()
             self.panel = PanelManager(self)
             self.dashboard = DashboardManager(self)
             self.analysis_pub = AnalysisPublisher(
-                self, self.bus, interval_s=int(os.getenv("ANALYSIS_REPORT_SEC", "60"))
+                self, self.bus, interval_s=env_int("ANALYSIS_REPORT_SEC", 60)
             )
-            # 초기 대시보드/패널 확보는 on_ready에서
+
 
         async def on_ready(self) -> None:
-
             log.info("[DISCORD][READY] 로그인: %s (%s)", self.user, self.user and self.user.id)
-            try:
-                await self.dashboard.ensure_dashboard_message()
-            except Exception as e:
-                log.warning("[대시보드] 초기화 실패: %s", e)
-            try:
-                await self.panel.ensure_panel_message()
-            except Exception as e:
-                log.warning("[패널] 초기화 실패: %s", e)
-            try:
-                if self.analysis_pub:
-                    self.analysis_pub.start()
-            except Exception as e:
-                log.warning("[ANALYSIS] start 실패: %s", e)
-            # 주기 루프 시작(중복 스타트 방지)
+            await self.dashboard.ensure_dashboard_message()
+            await self.panel.ensure_panel_message()
+
             if not getattr(self, "_dash_task_started", False):
                 self._dash_task_started = True
                 self._update_dashboard.start()
-                # 알림 펌프 루프가 있다면 여기도 start()
-                self._pump_alerts.start()
+            self.analysis_pub.start()
 
-        async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
-            # 사용자가 /패널 입력 시 CommandNotFound → 안내
-            try:
-                from discord.app_commands.errors import CommandNotFound
-                if isinstance(error, CommandNotFound):
-                    await interaction.response.send_message(
-                        "명령을 찾을 수 없습니다. 입력은 `/panel` 입니다. (표시는 **패널**)",
-                        ephemeral=True,
-                    )
-                    return
-            except Exception:
-                pass
+        async def on_app_command_error(self, ia, error: Exception):
+            from discord.app_commands.errors import CommandNotFound
+            if isinstance(error, CommandNotFound):
+                await ia.response.send_message(
+                    "명령을 찾을 수 없습니다. 입력은 `/panel` 입니다. (표시는 **패널**)",
+                    ephemeral=True,
+                )
+                return
             log.warning("[DISCORD][CMD_ERROR] %s", error)
 
         async def close(self) -> None:
-            # task 루프들 안전 종료
             try:
                 if hasattr(self, "_update_dashboard"):
                     self._update_dashboard.cancel()
             except Exception:
                 pass
             try:
-                if hasattr(self, "_pump_alerts"):
-                    self._pump_alerts.cancel()
+                if hasattr(self, "analysis_pub"):
+                    self.analysis_pub.stop()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "panel"):
+                    await self.panel.close()
             except Exception:
                 pass
             try:
@@ -152,53 +138,6 @@ else:
         async def _before_update(self):
             await self.wait_until_ready()
 
-
-        @tasks.loop(seconds=2)
-        async def _pump_alerts(self):  # pragma: no cover - 실제 실행 환경 의존
-            """runtime/alerts_queue.jsonl 내용을 alerts 채널로 전송"""
-            src = ALERTS_QUEUE
-            tmp = ALERTS_QUEUE + ".sending"
-            if not os.path.exists(src):
-                return
-            try:
-                os.replace(src, tmp)
-            except FileNotFoundError:
-                return
-            except Exception as e:
-                log.warning("[ALERT_PUMP] rename fail: %s", e)
-                return
-
-            alert_id = int(os.getenv("CHAN_ALERTS_ID") or "0")
-            ch = self.get_channel(alert_id) if alert_id else None
-            if ch is None and alert_id:
-                try:
-                    ch = await self.fetch_channel(alert_id)
-                except Exception as e:
-                    log.warning("[ALERT_PUMP] fetch channel fail: %s", e)
-
-            try:
-                with open(tmp, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except Exception:
-                            continue
-                        text = rec.get("text") or ""
-                        if isinstance(ch, discord.TextChannel):
-                            try:
-                                await ch.send(text)
-                            except Exception as e:
-                                log.warning("[ALERT_PUMP] send fail: %s", e)
-                        else:
-                            log.info("[ALERT_PUMP][DRY] %s", text)
-            finally:
-                try:
-                    os.remove(tmp)
-                except Exception:
-                    pass
 
 
     def run_discord_bot(bus: StateBus) -> None:
