@@ -151,6 +151,7 @@ class OpsHttp:
         self._th = threading.Thread(target=self._srv.serve_forever,
                                     name="ops-http", daemon=True)
         self._th.start()
+
         self._log.info("[OPS_HTTP] start on %s:%s", self.cfg.host, self.cfg.port)
 
     def stop(self) -> None:

@@ -132,6 +132,7 @@ class StreamManager:
         """Compat wrapper for graceful shutdown."""
         self.stop()
 
+
     def _poll_mark(self, symbol: str, interval_s: float = 1.0) -> None:
         while not self._stop.is_set():
             r = self.data_cli.mark_price(symbol)
