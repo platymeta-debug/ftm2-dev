@@ -46,6 +46,14 @@ async def apply_exec_toggle(bus, active: bool, *, source="PANEL", orchestrator=N
     log.info("[EXEC] %s (source=%s, prev=%s)",
              "enabled" if active else "disabled", source, prev)
 
+    try:
+        router_active = getattr(getattr(bus, "exec_router", object()), "cfg", object()).active
+        if router_active != active and hasattr(bus, "exec_router"):
+            bus.exec_router.cfg.active = bool(active)
+            log.info("[EXEC_ROUTE] sync router active -> %s", active)
+    except Exception:
+        log.exception("E_EXEC_ROUTE_SYNC")
+
 
 try:
     class ControlPanelView(discord.ui.View):

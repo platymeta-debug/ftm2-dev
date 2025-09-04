@@ -2,46 +2,51 @@
 """Discord 실시간 분석 리포트 발행"""
 # [ANCHOR:ANALYSIS_PUB]
 
-import json, time, asyncio
-from pathlib import Path
+import os, time, asyncio
 import discord, logging
 from ftm2.utils.env import env_str, env_int
+from ftm2.db import init_db
+from ftm2.dashboard import _cfg_get, _cfg_set
 
 class AnalysisPublisher:
-    def __init__(self, bot, bus, interval_s: int|None=None):
+    def __init__(self, bot, bus, interval_s: int | None = None):
         self.bot = bot
         self.bus = bus
         self.intv = interval_s or env_int("ANALYSIS_REPORT_SEC", 60)
         self.log = logging.getLogger("ftm2.analysis")
-        self._path = Path("./runtime/analysis.json")
         self._msg = None
         self._task = None
+        db_path = os.getenv("DB_PATH", "./runtime/trader.db")
+        self.db = init_db(db_path)
 
-    async def _ensure_msg(self):
-        ch_id = int(env_str("DISCORD_CHANNEL_ID_ANALYSIS","0") or "0")
+
+    async def _ensure_channel(self):
+        ids = [
+            env_str("DISCORD_CHANNEL_ID_ANALYSIS", ""),
+            env_str("DISCORD_CHANNEL_ID_DASHBOARD", ""),
+            env_str("DISCORD_CHANNEL_ID_PANEL", ""),
+        ]
+        ch_id = next((int(x) for x in ids if x and x.isdigit()), 0)
         if not ch_id:
-            # 폴백: 대시보드 → 패널 순
-            ch_id = int(env_str("DISCORD_CHANNEL_ID_DASHBOARD","0") or "0") \
-                    or int(env_str("DISCORD_CHANNEL_ID_PANEL","0") or "0")
-        if not ch_id:
-            raise RuntimeError("analysis/publisher: no channel id configured")
+            raise RuntimeError("No analysis-capable channel configured")
+
         ch = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
+        return ch
 
-        mid = None
-        if self._path.exists():
-            try: mid = json.loads(self._path.read_text()).get("mid")
-            except Exception: pass
-
+    async def _ensure_message(self):
+        ch = await self._ensure_channel()
+        mid = _cfg_get(self.db, "ANALYSIS_MSG_ID")
+        msg = None
         if mid:
-            try: self._msg = await ch.fetch_message(mid)
-            except Exception: self._msg = None
-
-        if self._msg is None:
-            self._msg = await ch.send("🔎 분석 초기화…")
-            try: await self._msg.pin(reason="FTM2 Analysis")
-            except Exception: pass
-            self._path.write_text(json.dumps({"mid": self._msg.id}))
-        return self._msg
+            try:
+                msg = await ch.fetch_message(int(mid))
+            except Exception:
+                msg = None
+        if not msg:
+            msg = await ch.send("📈 분석 초기화 중…")
+            _cfg_set(self.db, "ANALYSIS_MSG_ID", str(msg.id))
+        self._msg = msg
+        return msg
 
     # [ANCHOR:ANALYSIS_PUBLISHER] begin
     def _render(self, snap: dict) -> str:
@@ -71,7 +76,7 @@ class AnalysisPublisher:
 
 
     async def _loop(self):
-        await self._ensure_msg()
+        await self._ensure_message()
         while True:
             try:
                 snap = self.bot.bus.snapshot() if hasattr(self.bot,"bus") else {}
