@@ -35,6 +35,10 @@ class Persistence:
             self._conn.execute("PRAGMA temp_store=MEMORY;")
         log.info("[DB] open path=%s (WAL)", self.db_path)
 
+    def _col_exists(self, table: str, col: str) -> bool:
+        cur = self._conn.execute(f"PRAGMA table_info({table})")
+        return any(row[1] == col for row in cur.fetchall())
+
     def close(self) -> None:
         with self._lock:
             try:
@@ -94,7 +98,7 @@ class Persistence:
             """
             CREATE TABLE IF NOT EXISTS config (
               key TEXT PRIMARY KEY,
-              val TEXT,
+              value TEXT,
               updated_at INTEGER
             );
             """,
@@ -155,6 +159,16 @@ class Persistence:
         with self._lock, self._conn:
             for q in ddl:
                 self._conn.execute(q)
+            if not self._col_exists("config", "value"):
+                self._conn.execute("ALTER TABLE config ADD COLUMN value TEXT")
+                try:
+                    self._conn.execute("UPDATE config SET value = v WHERE value IS NULL")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    self._conn.execute("UPDATE config SET value = val WHERE value IS NULL")
+                except sqlite3.OperationalError:
+                    pass
         log.info("[DB] schema ready")
 
     # ---------- small helpers ----------
@@ -182,10 +196,10 @@ class Persistence:
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO config(key, val, updated_at)
+                INSERT INTO config(key, value, updated_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
-                  val=excluded.val,
+                  value=excluded.value,
                   updated_at=excluded.updated_at
                 """,
                 (key, val, self._now_ms()),
@@ -193,9 +207,9 @@ class Persistence:
 
     def get_config(self, key: str) -> Optional[str]:
         with self._lock:
-            cur = self._conn.execute("SELECT val FROM config WHERE key=?", (key,))
+            cur = self._conn.execute("SELECT value FROM config WHERE key=?", (key,))
             row = cur.fetchone()
-            return row["val"] if row else None
+            return row["value"] if row else None
 
     def save_trade(self, d: Dict[str, Any]) -> None:
         # 필드 기본값 보정

@@ -8,10 +8,15 @@ import logging
 import asyncio
 from typing import Dict, Any
 
+from .db import init_db
+
 try:  # pragma: no cover - discord 미설치 환경 대응
     import discord  # type: ignore
+    from discord.errors import Forbidden  # type: ignore
 except Exception:  # pragma: no cover
     discord = None  # type: ignore
+    class Forbidden(Exception):
+        ...
 
 log = logging.getLogger("ftm2.dashboard")
 if not log.handlers:
@@ -30,41 +35,25 @@ def _db_path() -> str:
     return os.getenv("DB_PATH", "./runtime/trader.db")
 
 
-def _cfg_get(key: str) -> str | None:
+def _cfg_get(conn: sqlite3.Connection, key: str, default=None):
     try:
-        with sqlite3.connect(_db_path(), timeout=2) as conn:
-            cur = conn.execute("SELECT value FROM config WHERE key=?", (key,))
-            row = cur.fetchone()
-            return row[0] if row else None
-    except Exception:
-        log.exception("E_DB_CFG_GET key=%s", key)
-        return None
+        cur = conn.execute("SELECT value FROM config WHERE key=?", (key,))
+        row = cur.fetchone()
+        return row[0] if row and row[0] is not None else default
+    except sqlite3.OperationalError:
+        return default
 
 
-def _cfg_set(key: str, value: str):
-    try:
-        with sqlite3.connect(_db_path(), timeout=2) as conn:
-            conn.execute(
-                """
-            CREATE TABLE IF NOT EXISTS config(
-              key TEXT PRIMARY KEY,
-              value TEXT,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-            )
-            conn.execute(
-                """
-            INSERT INTO config(key,value,updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET
-              value=excluded.value,
-              updated_at=CURRENT_TIMESTAMP
-            """,
-                (key, value),
-            )
-    except Exception:
-        log.exception("E_DB_CFG_SET key=%s", key)
+def _cfg_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO config(key, value)
+        VALUES(?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (key, value),
+    )
+    conn.commit()
 
 
 async def ensure_dashboard_message(bot, channel_id: int, content_factory):
@@ -74,59 +63,65 @@ async def ensure_dashboard_message(bot, channel_id: int, content_factory):
     """
     import discord
 
-    ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    msg_id = _cfg_get("DASHBOARD_MSG_ID")
+    with init_db(_db_path()) as conn:
+        ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        msg_id = _cfg_get(conn, "DASHBOARD_MSG_ID")
 
-    msg = None
-    created = False
+        msg = None
+        created = False
 
-    if msg_id:
-        try:
-            msg = await ch.fetch_message(int(msg_id))
-        except Exception:
-            msg = None
+        if msg_id:
+            try:
+                msg = await ch.fetch_message(int(msg_id))
+            except Exception:
+                msg = None
 
-    if msg is None:
-        txt = content_factory()
-        msg = await ch.send(txt)
-        _cfg_set("DASHBOARD_MSG_ID", str(msg.id))
-        created = True
-        log.info("[대시보드] 신규 생성(mid=%s)", msg.id)
+        if msg is None:
+            txt = content_factory()
+            msg = await ch.send(txt)
+            _cfg_set(conn, "DASHBOARD_MSG_ID", str(msg.id))
+            created = True
+            log.info("[대시보드] 신규 생성(mid=%s)", msg.id)
 
-    # 핀 상태 점검
-    try:
-        pins = await ch.pins()
-        pinned_ids = {m.id for m in pins}
-        if msg.id not in pinned_ids:
-            await msg.pin(reason="FTM2 dashboard auto pin")
-            log.info("[대시보드] 핀 복구 완료(mid=%s)", msg.id)
-    except Exception:
-        log.exception("E_DASHBOARD_PIN_RECOVER")
+        allow_pin = os.getenv("DISCORD_ALLOW_PIN", "true").lower() != "false"
+        if allow_pin:
+            if _cfg_get(conn, "DASHBOARD_PIN_OK") == "0":
+                log.warning("Pin skipped (no permission). Grant 'Manage Messages' or ignore.")
+            else:
+                try:
+                    await msg.pin(reason="FTM2 dashboard auto pin")
+                    _cfg_set(conn, "DASHBOARD_PIN_OK", "1")
+                except Forbidden:
+                    _cfg_set(conn, "DASHBOARD_PIN_OK", "0")
+                    log.warning("Pin skipped (no permission). Grant 'Manage Messages' or ignore.")
+                except Exception:
+                    log.exception("E_DASHBOARD_PIN_RECOVER")
 
-    return msg, created
+        return msg, created
 
 
 async def update_dashboard(bot, channel_id: int, render_text: str):
     """기존 메시지 편집(update). 없으면 생성 후 핀."""
-    msg_id = _cfg_get("DASHBOARD_MSG_ID")
-    ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    msg = None
-    if msg_id:
-        try:
-            msg = await ch.fetch_message(int(msg_id))
-        except Exception:
-            msg = None
-    if msg is None:
-        def _factory():
-            return render_text
+    with init_db(_db_path()) as conn:
+        msg_id = _cfg_get(conn, "DASHBOARD_MSG_ID")
+        ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        msg = None
+        if msg_id:
+            try:
+                msg = await ch.fetch_message(int(msg_id))
+            except Exception:
+                msg = None
+        if msg is None:
+            def _factory():
+                return render_text
 
-        msg, _ = await ensure_dashboard_message(bot, channel_id, _factory)
-    else:
-        try:
-            await msg.edit(content=render_text)
-            log.info("[대시보드] 업데이트 완료")
-        except Exception:
-            log.exception("E_DASHBOARD_EDIT")
+            msg, _ = await ensure_dashboard_message(bot, channel_id, _factory)
+        else:
+            try:
+                await msg.edit(content=render_text)
+                log.info("[대시보드] 업데이트 완료")
+            except Exception:
+                log.exception("E_DASHBOARD_EDIT")
 
 
 # [ANCHOR:DASHBOARD_PIN_RECOVERY] end

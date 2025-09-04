@@ -904,6 +904,33 @@ class Orchestrator:
     # [ANCHOR:ORCH_EQUITY_LOOP] end
 
 
+    def _warmup(self, n: int = 800) -> None:
+        for s in self.symbols:
+            for tf in self.kline_intervals:
+                r = self.cli_data.klines(s, tf, limit=n)
+                if not r.get("ok"):
+                    log.warning("[WARMUP_FAIL] %s %s %s", s, tf, r.get("error"))
+                    continue
+                rows = r.get("data", [])
+                for row in rows:
+                    try:
+                        bar = {
+                            "t": int(row[0]),
+                            "T": int(row[6]),
+                            "o": float(row[1]),
+                            "h": float(row[2]),
+                            "l": float(row[3]),
+                            "c": float(row[4]),
+                            "v": float(row[5]),
+                            "x": True,
+                        }
+                    except Exception:
+                        continue
+                    self.bus.update_kline(s, tf, bar)
+                    self.feature_engine.update(s, tf, self.bus)
+                    self.regime.update(s, tf, self.bus)
+                log.info("[WARMUP] %s/%s bars=%d", s, tf, len(rows))
+
 
     def start(self) -> None:
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
@@ -911,6 +938,9 @@ class Orchestrator:
         #     t = threading.Thread(target=self._price_poller, args=(sym,), name=f"poll:{sym}", daemon=True)
         #     t.start()
         #     self._threads.append(t)
+
+        # HIST warmup
+        self._warmup()
 
         # WS 스트림 또는 리플레이 시작
         if getattr(self.replay.cfg, "enabled", False):

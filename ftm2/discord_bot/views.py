@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # [ANCHOR:PANEL_VIEWS] begin
 import os, sqlite3, logging, contextlib
+
+from ftm2.db import init_db
 import discord  # type: ignore
 
 log = logging.getLogger(__name__)
@@ -10,32 +12,16 @@ def _db_path() -> str:
     return os.getenv("DB_PATH", "./runtime/trader.db")
 
 
-def _db_upsert_exec_active(active: bool):
-    """config 테이블에 EXEC_ACTIVE upsert."""
-    try:
-        with sqlite3.connect(_db_path(), timeout=2) as conn:
-            conn.execute(
-                """
-            CREATE TABLE IF NOT EXISTS config(
-              key TEXT PRIMARY KEY,
-              value TEXT,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-            )
-            conn.execute(
-                """
-            INSERT INTO config(key, value, updated_at)
-            VALUES ('EXEC_ACTIVE', ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET
-              value=excluded.value,
-              updated_at=CURRENT_TIMESTAMP
-            """,
-                ("1" if active else "0",),
-            )
-        log.info("[PANEL] EXEC_ACTIVE upserted=%s path=%s", active, _db_path())
-    except Exception as e:
-        log.warning("E_DB_UPSERT_EXEC_ACTIVE %r", e)
+def set_exec_active(conn, is_on: bool, source: str):
+    conn.execute(
+        """
+        INSERT INTO config(key, value) VALUES('EXEC_ACTIVE', ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        ("1" if is_on else "0",),
+    )
+    conn.commit()
+    log.info("[EXEC] %s (source=%s)", "enabled" if is_on else "disabled", source)
 
 
 async def apply_exec_toggle(bus, active: bool, *, source="PANEL", orchestrator=None):
@@ -52,7 +38,11 @@ async def apply_exec_toggle(bus, active: bool, *, source="PANEL", orchestrator=N
         except Exception:
             log.exception("E_ORCH_TOGGLE_CB")
 
-    _db_upsert_exec_active(bool(active))
+    try:
+        with init_db(_db_path()) as conn:
+            set_exec_active(conn, bool(active), source)
+    except Exception as e:
+        log.warning("E_DB_UPSERT_EXEC_ACTIVE %r", e)
     log.info("[EXEC] %s (source=%s, prev=%s)",
              "enabled" if active else "disabled", source, prev)
 
