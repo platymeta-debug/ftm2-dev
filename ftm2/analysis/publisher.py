@@ -19,6 +19,7 @@ class AnalysisPublisher:
         db_path = os.getenv("DB_PATH", "./runtime/trader.db")
         self.db = init_db(db_path)
 
+
     async def _ensure_channel(self):
         ids = [
             env_str("DISCORD_CHANNEL_ID_ANALYSIS", ""),
@@ -28,6 +29,7 @@ class AnalysisPublisher:
         ch_id = next((int(x) for x in ids if x and x.isdigit()), 0)
         if not ch_id:
             raise RuntimeError("No analysis-capable channel configured")
+
         ch = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
         return ch
 
