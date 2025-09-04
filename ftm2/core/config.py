@@ -280,7 +280,11 @@ def load_exec_cfg(cfg_db) -> _ExecCfgView:
       exec.active, exec.cooldown_s, exec.tol_rel, exec.tol_abs, exec.order_type, exec.reduce_only
     """
 
-    A = _get_db_val(cfg_db, "exec.active") or _get_env_val("EXEC_ACTIVE")
+    A = (
+        _get_db_val(cfg_db, "exec.active")
+        or _get_db_val(cfg_db, "EXEC_ACTIVE")
+        or _get_env_val("EXEC_ACTIVE")
+    )
     CD = _get_db_val(cfg_db, "exec.cooldown_s") or _get_env_val("EXEC_COOLDOWN_S")
     TR = _get_db_val(cfg_db, "exec.tol_rel") or _get_env_val("EXEC_TOL_REL")
     TA = _get_db_val(cfg_db, "exec.tol_abs") or _get_env_val("EXEC_TOL_ABS")

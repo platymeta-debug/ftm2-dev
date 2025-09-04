@@ -98,7 +98,7 @@ class Persistence:
             """
             CREATE TABLE IF NOT EXISTS config (
               key TEXT PRIMARY KEY,
-              value TEXT,
+              val TEXT,
               updated_at INTEGER
             );
             """,
@@ -159,14 +159,14 @@ class Persistence:
         with self._lock, self._conn:
             for q in ddl:
                 self._conn.execute(q)
-            if not self._col_exists("config", "value"):
-                self._conn.execute("ALTER TABLE config ADD COLUMN value TEXT")
+            if not self._col_exists("config", "val"):
+                self._conn.execute("ALTER TABLE config ADD COLUMN val TEXT")
                 try:
-                    self._conn.execute("UPDATE config SET value = v WHERE value IS NULL")
+                    self._conn.execute("UPDATE config SET val = value WHERE val IS NULL")
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    self._conn.execute("UPDATE config SET value = val WHERE value IS NULL")
+                    self._conn.execute("UPDATE config SET val = v WHERE val IS NULL")
                 except sqlite3.OperationalError:
                     pass
         log.info("[DB] schema ready")
@@ -196,10 +196,10 @@ class Persistence:
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO config(key, value, updated_at)
+                INSERT INTO config(key, val, updated_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
-                  value=excluded.value,
+                  val=excluded.val,
                   updated_at=excluded.updated_at
                 """,
                 (key, val, self._now_ms()),
@@ -207,9 +207,9 @@ class Persistence:
 
     def get_config(self, key: str) -> Optional[str]:
         with self._lock:
-            cur = self._conn.execute("SELECT value FROM config WHERE key=?", (key,))
+            cur = self._conn.execute("SELECT val FROM config WHERE key=?", (key,))
             row = cur.fetchone()
-            return row["value"] if row else None
+            return row["val"] if row else None
 
     def save_trade(self, d: Dict[str, Any]) -> None:
         # 필드 기본값 보정

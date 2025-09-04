@@ -20,7 +20,7 @@ def test_persistence_basic(tmp_path):
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("select count(*) from events").fetchone()[0] == 1
         assert conn.execute("select count(*) from patches").fetchone()[0] == 1
-        assert conn.execute("select value from config where key='k'").fetchone()[0] == "v2"
+        assert conn.execute("select val from config where key='k'").fetchone()[0] == "v2"
         assert conn.execute("select count(*) from trades").fetchone()[0] == 1
         assert conn.execute("select qty from positions where symbol='BTCUSDT'").fetchone()[0] == 2.0
 

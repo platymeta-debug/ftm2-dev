@@ -15,8 +15,8 @@ def _db_path() -> str:
 def set_exec_active(conn, is_on: bool, source: str):
     conn.execute(
         """
-        INSERT INTO config(key, value) VALUES('EXEC_ACTIVE', ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        INSERT INTO config(key, val) VALUES('exec.active', ?)
+        ON CONFLICT(key) DO UPDATE SET val=excluded.val
         """,
         ("1" if is_on else "0",),
     )
