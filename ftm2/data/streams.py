@@ -11,7 +11,7 @@ import threading
 import time
 from typing import List, Dict, Any, Optional
 
-from ftm2.exchange.binance import BinanceClient, WSHandle
+from ftm2.exchange.binance import BinanceClient, WSHandle, ws_stop_all_parallel
 from ftm2.core.state import StateBus
 
 log = logging.getLogger("ftm2.streams")
@@ -53,6 +53,7 @@ class StreamManager:
         # user stream
         self._listen_key: Optional[str] = None
         self._keepalive_th: Optional[threading.Thread] = None
+        self._last_account_ts: float = 0.0
 
     # ---------------------- public API ----------------------
     def start(self) -> None:
@@ -113,11 +114,7 @@ class StreamManager:
             except Exception:
                 pass
         # stop ws handles
-        for h in list(self._handles):
-            try:
-                h.stop(timeout=2.0)
-            except Exception:
-                pass
+        ws_stop_all_parallel()
         self._handles.clear()
 
         if self._keepalive_th and self._keepalive_th.is_alive():
@@ -170,6 +167,16 @@ class StreamManager:
                 "x": bool(k.get("x", False)),
             }
             self.bus.update_kline(sym, itv, bar)
+            if not bar.get("x"):
+                return
+            # [ANCHOR:WS_ON_KLINE] begin
+            if hasattr(self, "feature_engine"):
+                self.feature_engine.update(sym, itv, self.bus)
+            if hasattr(self, "regime"):
+                self.regime.update(sym, itv, self.bus)
+            if hasattr(self, "orch"):
+                self.orch.on_bar_close(sym, itv, self.bus)
+            # [ANCHOR:WS_ON_KLINE] end
             log.debug("[WS KLINE] %s %s close=%s", sym, itv, bar["x"])
         except Exception as e:
             log.exception("kline cb err: %s", e)
@@ -200,6 +207,22 @@ class StreamManager:
             evt = (msg.get("e") or "").upper()
             if evt == "ACCOUNT_UPDATE":
                 a = msg.get("a") or {}
+                # [ANCHOR:WS_ON_USER] begin
+                bal = None
+                for b in a.get("B", []):
+                    if (b.get("a") or "").upper() == "USDT":
+                        bal = b
+                        break
+                if bal:
+                    wb = float(bal.get("wb", 0.0))
+                    cw = float(bal.get("cw", 0.0))
+                    self.bus.set_account({
+                        "ccy": "USDT",
+                        "totalWalletBalance": wb,
+                        "availableBalance": cw,
+                    })
+                    log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=USER", wb, cw)
+                    self._last_account_ts = time.time()
                 # positions array → {symbol: {...}} 로 단순 매핑
                 pos_map: Dict[str, Dict[str, Any]] = {}
                 for p in a.get("P", []):
@@ -215,6 +238,7 @@ class StreamManager:
                     }
                 if pos_map:
                     self.bus.set_positions(pos_map)
+                # [ANCHOR:WS_ON_USER] end
             elif evt == "ORDER_TRADE_UPDATE":
                 o = msg.get("o") or {}
                 rec = {

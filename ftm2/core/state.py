@@ -13,7 +13,7 @@ from collections import deque
 from typing import Dict, Tuple, Any, List
 
 
-# [ANCHOR:STATE_BUS]
+# [ANCHOR:STATE_BUS] begin
 class StateBus:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -24,6 +24,7 @@ class StateBus:
         self._features: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._regimes: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._forecasts: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._intents: Dict[str, Dict[str, Any]] = {}
         self._targets: Dict[str, Dict[str, Any]] = {}
         self._risk: Dict[str, Any] = {}
         self._fills = deque(maxlen=1000)   # 체결 이벤트 큐
@@ -61,6 +62,10 @@ class StateBus:
     def update_forecast(self, symbol: str, interval: str, fc: Dict[str, Any]) -> None:
         with self._lock:
             self._forecasts[(symbol, interval)] = dict(fc)
+
+    def update_intent(self, symbol: str, intent: Dict[str, Any]) -> None:
+        with self._lock:
+            self._intents[symbol] = dict(intent)
 
     def set_targets(self, mapping: Dict[str, Dict[str, Any]]) -> None:
         with self._lock:
@@ -109,6 +114,7 @@ class StateBus:
                 "features": dict(self._features),
                 "regimes": dict(self._regimes),
                 "forecasts": dict(self._forecasts),
+                "intents": dict(self._intents),
                 "targets": dict(self._targets),
                 "risk": dict(self._risk),
                 "open_orders": {k: list(v) for k, v in self._open_orders.items()},
@@ -120,3 +126,4 @@ class StateBus:
 
     def uptime_s(self) -> int:
         return int(time.time() - (self._boot_ts / 1000.0))
+# [ANCHOR:STATE_BUS] end

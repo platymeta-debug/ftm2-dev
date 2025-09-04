@@ -262,3 +262,36 @@ class FeatureEngine:
                          sym, itv, T, feats.get("ret1", 0.0), feats.get("rv20", 0.0), feats.get("atr14", 0.0))
         return out
 
+    # [ANCHOR:FEATURES_UPDATE] begin
+    def update(self, sym: str, itv: str, bus) -> None:
+        snap = bus.snapshot()
+        bar = snap.get("klines", {}).get((sym, itv))
+        if not bar or not bar.get("x"):
+            return
+        st = self._state_of(sym, itv)
+        o = float(bar.get("o", 0.0))
+        h = float(bar.get("h", 0.0))
+        l = float(bar.get("l", 0.0))
+        c = float(bar.get("c", 0.0))
+        feats = st.update_bar(o, h, l, c, self.cfg)
+        rets = st.rets.values()
+        rv = self._std(rets[-self.cfg.rv_n:]) if len(rets) >= self.cfg.rv_n else self._std(rets)
+        ser = self._pr_series(sym, itv, "rv20")
+        ser.append(float(rv))
+        rv_pr = percentile_rank(sorted(ser.values()), float(rv))
+        ret1 = feats.get("ret1", 0.0)
+        atr = feats.get("atr14", 0.0)
+        out = {
+            "ret1": float(ret1),
+            "rv20": float(rv),
+            "atr": float(atr),
+            "ema_fast": float(feats.get("ema_fast", c)),
+            "ema_slow": float(feats.get("ema_slow", c)),
+            "pr_rv20": float(rv_pr),
+            "ts": int(bar.get("T") or 0),
+        }
+        bus.update_features(sym, itv, out)
+        log.info("[FEATURES] %s %s T=%s ret1=%.5f rv20=%.5f atr=%.5f",
+                 sym, itv, out["ts"], out["ret1"], out["rv20"], out["atr"])
+    # [ANCHOR:FEATURES_UPDATE] end
+
