@@ -22,15 +22,22 @@ import hashlib
 import threading
 import logging
 import concurrent.futures
+from urllib.parse import urlencode
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any, List
 
 from .http_driver import HttpDriver
 
 try:
-    from ftm2.core.env import load_env_chain
+    from ftm2.core.env import (
+        load_env_chain,
+        load_binance_credentials,
+    )
 except Exception:  # pragma: no cover
     from core.env import load_env_chain  # type: ignore
+    from core.env import load_binance_credentials  # type: ignore
+
+LIVE_MARK_WS = "wss://fstream.binance.com/ws"  # 시장 데이터는 항상 라이브
 
 _http_drv = HttpDriver()
 
@@ -383,21 +390,23 @@ class BinanceClient:
     def for_trade(cls, mode: str, order_active: bool = True) -> "BinanceClient":
         """
         mode: 'auto' | 'live' | 'testnet' | 'dry'
-        - 'auto' : 공통 키를 읽고 환경을 자동 감지하여 해당 환경으로 거래
-        - 그 외  : 지정된 환경으로 거래 (공통 키 우선, 환경별 키 후순위)
+        - 'auto' : load_binance_credentials() 로 자동 환경 감지
+        - 그 외  : 해당 환경으로 강제 지정
         """
         m = (mode or "auto").lower()
         if m == "dry":
             cli = cls("testnet", "", "", order_active=False)
-        elif m == "auto":
-            key, secret = cls._load_keypair_unified()
-            env = cls._detect_trade_env(key)
-            cli = cls(env, key, secret, order_active=order_active)
         else:
-            if m not in ("live", "testnet"):
-                m = "testnet"
-            key, secret = cls._load_keypair_unified(prefer=m)
-            cli = cls(m, key, secret, order_active=order_active)
+            creds = load_binance_credentials()
+            if m == "auto":
+                env = creds.env
+            elif m == "live":
+                env = "live"
+            elif m == "testnet":
+                env = "testnet"
+            else:
+                env = "testnet"
+            cli = cls(env, creds.api_key, creds.api_secret, order_active=order_active)
         try:
             cli.sync_time()
         except Exception as e:  # pragma: no cover
@@ -432,6 +441,16 @@ class BinanceClient:
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
+    def _encode_and_sign(self, params: Dict[str, Any]) -> str:
+        """URL-encode params and append HMAC-SHA256 signature."""
+        params = dict(params)
+        params.setdefault("recvWindow", self.recv_window_ms)
+        if "timestamp" not in params:
+            params["timestamp"] = self._now_ms()
+        encoded = urlencode(params, doseq=True)
+        sig = hmac.new(self.secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+        return f"{encoded}&signature={sig}"
+
     def _http_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
                       signed: bool = False, headers: Optional[Dict[str, str]] = None,
                       _retried: bool = False) -> Dict[str, Any]:
@@ -450,15 +469,12 @@ class BinanceClient:
         # 서명
         hdrs = dict(headers or {})
         orig_hdrs = dict(hdrs)
+        payload: Optional[str] = None
         if signed:
             if not self.key or not self.secret:
                 return _err("E_KEY_EMPTY", "API key/secret required", path=path)
             hdrs["X-MBX-APIKEY"] = self.key
-            params.setdefault("recvWindow", self.recv_window_ms)
-            params["timestamp"] = self._now_ms()
-            query = "&".join(f"{k}={params[k]}" for k in sorted(params))
-            sig = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-            params["signature"] = sig
+            payload = self._encode_and_sign(params)
         else:
             # 일부 엔드포인트(유저스트림)는 KEY 헤더만 요구
             if "listenKey" in path or path.endswith("/listenKey"):
@@ -470,30 +486,26 @@ class BinanceClient:
             if self.http == "httpx":
                 import httpx
                 with httpx.Client(timeout=self.http_timeout) as client:
-                    if method == "GET":
-                        r = client.get(url, params=params, headers=hdrs)
-                    elif method == "POST":
-                        r = client.post(url, params=params, headers=hdrs)
-                    elif method == "PUT":
-                        r = client.put(url, params=params, headers=hdrs)
-                    elif method == "DELETE":
-                        r = client.delete(url, params=params, headers=hdrs)
+                    if signed:
+                        if method in ("GET", "DELETE"):
+                            r = client.request(method, f"{url}?{payload}", headers=hdrs)
+                        else:  # POST, PUT
+                            hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+                            r = client.request(method, url, content=payload, headers=hdrs)
                     else:
-                        return _err("E_HTTP_METHOD", f"Unsupported method {method}", path=path)
+                        r = client.request(method, url, params=params, headers=hdrs)
                     status = r.status_code
                     text = r.text
             else:
                 import requests
-                if method == "GET":
-                    r = requests.get(url, params=params, headers=hdrs, timeout=self.http_timeout)
-                elif method == "POST":
-                    r = requests.post(url, params=params, headers=hdrs, timeout=self.http_timeout)
-                elif method == "PUT":
-                    r = requests.put(url, params=params, headers=hdrs, timeout=self.http_timeout)
-                elif method == "DELETE":
-                    r = requests.delete(url, params=params, headers=hdrs, timeout=self.http_timeout)
+                if signed:
+                    if method in ("GET", "DELETE"):
+                        r = requests.request(method, f"{url}?{payload}", headers=hdrs, timeout=self.http_timeout)
+                    else:
+                        hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+                        r = requests.request(method, url, data=payload, headers=hdrs, timeout=self.http_timeout)
                 else:
-                    return _err("E_HTTP_METHOD", f"Unsupported method {method}", path=path)
+                    r = requests.request(method, url, params=params, headers=hdrs, timeout=self.http_timeout)
                 status = r.status_code
                 text = r.text
 
@@ -632,6 +644,87 @@ class BinanceClient:
         except Exception:
             return None
 
+    # --- 계정 스냅샷 ---------------------------------------------------
+    def account_snapshot(self) -> Dict[str, Any]:
+        """/fapi/v2/account에서 잔고/포지션을 한 번에 가져온다."""
+        r = self._http_request("GET", "/v2/account", signed=True)
+        if not r.get("ok"):
+            return {}
+        d = r.get("data") or {}
+        try:
+            equity = float(d.get("totalMarginBalance") or 0.0)
+            wallet = float(d.get("totalWalletBalance") or 0.0)
+            upnl = float(d.get("totalUnrealizedProfit") or 0.0)
+            avail = float(d.get("availableBalance") or 0.0)
+        except Exception:
+            equity = wallet = upnl = avail = 0.0
+        positions = d.get("positions") or []
+        return {"equity": equity, "wallet": wallet, "upnl": upnl, "avail": avail, "positions": positions}
+
+    # --- 통합 잔고/에쿼티 조회 ---------------------------------------
+    def fetch_account_equity(self) -> Dict[str, float]:
+        snap = self.account_snapshot()
+        return {
+            "wallet": float(snap.get("wallet", 0.0)),
+            "equity": float(snap.get("equity", 0.0)),
+            "upnl": float(snap.get("upnl", 0.0)),
+            "avail": float(snap.get("avail", 0.0)),
+        }
+
+    # 간편 equity 조회
+    def equity(self) -> float:
+        try:
+            return float(self.account_snapshot().get("equity", 0.0))
+        except Exception:
+            return 0.0
+
+    # --- 신규: 포지션 조회 ---------------------------------------------
+    def fetch_positions(self, symbols: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
+        """/fapi/v2/account 의 positions 필드를 사용해 현재 포지션을 조회한다."""
+        r = self._http_request("GET", "/v2/account", signed=True)
+        if not r.get("ok"):
+            return {}
+        data = r.get("data") or {}
+        out: Dict[str, Dict[str, Any]] = {}
+        pos_list = data.get("positions") or []
+        for p in pos_list:
+            sym = (p.get("symbol") or "").upper()
+            if not sym:
+                continue
+            if symbols and sym not in symbols:
+                continue
+            try:
+                qty = float(p.get("positionAmt") or 0.0)
+            except Exception:
+                qty = 0.0
+            if abs(qty) == 0:
+                continue
+            try:
+                ep = float(p.get("entryPrice") or 0.0)
+                up = float(p.get("unrealizedProfit")) if "unrealizedProfit" in p else float(p.get("unRealizedProfit", 0.0))
+                lev = float(p.get("leverage") or 0.0)
+            except Exception:
+                ep = up = lev = 0.0
+            out[sym] = {
+                "symbol": sym,
+                "pa": qty,
+                "ep": ep,
+                "up": up,
+                "leverage": lev,
+                "marginType": p.get("marginType"),
+            }
+        return out
+
+    # --- 포지션 리스크 조회 -------------------------------------------
+    def positions_risk(self, symbols: List[str] | None = None) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {}
+        if symbols:
+            params["symbols"] = json.dumps(symbols)
+        r = self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
+        if not r.get("ok"):
+            return []
+        return r.get("data") or []
+
     def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
         주문 스텁: 기본은 실제 전송하지 않고 E_ORDER_STUB 반환.
@@ -643,7 +736,13 @@ class BinanceClient:
         path = "/v1/order/test" if validate_only else "/v1/order"
         if not self.order_active and not validate_only:
             return _err("E_ORDER_STUB", "order endpoint is stubbed (disabled)", payload=payload)
-        r = self._http_request("POST", path, params=payload, signed=True)
+        data = dict(payload)
+        if (data.get("type") or "").upper() == "MARKET":
+            data.pop("timeInForce", None)
+            data.pop("price", None)
+        if "reduceOnly" in data:
+            data["reduceOnly"] = "true" if data["reduceOnly"] else "false"
+        r = self._http_request("POST", path, params=data, signed=True)
         if not r.get("ok"):
             err = r.get("error") or {}
             ctx = err.get("ctx") or {}

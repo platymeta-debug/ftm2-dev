@@ -184,13 +184,22 @@ class ForecastEnsemble:
             else:
                 stance = "FLAT"
 
+            explain = {
+                "mom": comp_scores["trend"] * w["trend"],
+                "meanrev": comp_scores["mr"] * w["mr"],
+                "breakout": comp_scores["cross"] * w["cross"],
+                "vol": 0.0,
+                "regime": 0.0,
+            }
             fc = {
                 "score": float(score),
                 "prob_up": float(prob_up),
+                "p_up": float(prob_up),
                 "stance": stance,
                 "components": comp_scores,
                 "weights": w,
                 "regime": regime_code,
+                "explain": explain,
             }
             rows.append({"symbol": sym, "interval": self.interval, "T": T, "forecast": fc})
 

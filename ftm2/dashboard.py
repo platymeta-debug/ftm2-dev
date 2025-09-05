@@ -156,6 +156,13 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
         ol = kpi.get("order_ledger") or {}
         bar = "─" * 33
         fr = ol.get("fill_rate")
+        pos = snapshot.get("positions") or {}
+        upnl = 0.0
+        for v in pos.values():
+            try:
+                upnl += float(v.get("up") or 0.0)
+            except Exception:
+                pass
 
         lines += [
             "📊 **FTM2 KPI 대시보드**",
@@ -163,6 +170,7 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
             f"⏱️ 가동시간: **{up_min}분**",
 
             f"💰 자본(Equity): **{_fmt(kpi.get('equity'))}**  레버리지: **{_fmt(kpi.get('lever'))}x**",
+            f"📈 포지션: {len(pos)}개  UPNL: {upnl:,.2f} USDT",
             f"📉 당일손익: **{_fmt(kpi.get('day_pnl_pct'))}%**  " + ("🛑 데일리컷" if kpi.get("day_cut") else "✅ 정상"),
             "",
             f"📐 익스포저: 롱 {_fmt(kpi.get('used_long'), '0') }% / 숏 {_fmt(kpi.get('used_short'), '0') }%",
