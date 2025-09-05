@@ -98,4 +98,9 @@
 - feat(streams): WS 종료 병렬화 및 타임아웃(WS_STOP_TIMEOUT_S, WS_STOP_MAX_WORKERS)
 - feat(dashboard): 대시보드 고정(핀) 자동 복구 — DB(config.DASHBOARD_MSG_ID) 연동
 
+2025-09-05 v0.3.8
+- feat(orch): Equity 소스 우선순위 확정(계정→OVERRIDE→기본값)
+- fix(panel): 라우터 내부속성 접근 제거(토글 예외 방지)
+- chore(req): httpx/requests 명시 추가
+
 

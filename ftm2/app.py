@@ -167,6 +167,27 @@ log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+# [ANCHOR:EQUITY_SOURCE] begin
+def resolve_equity(bus) -> float:
+    """계정 폴링 값이 있으면 최우선, 그다음 OVERRIDE, 없으면 기본 1000."""
+    acct_eq = None
+    try:
+        acct_eq = getattr(getattr(bus, "state", object()), "equity_usdt", None)
+    except Exception:
+        acct_eq = None
+    if isinstance(acct_eq, (int, float)) and acct_eq > 0:
+        return float(acct_eq)
+
+    ov = os.getenv("RISK_EQUITY_OVERRIDE", "").strip()
+    if ov:
+        try:
+            return float(ov)
+        except ValueError:
+            log.warning("E_EQUITY_OVERRIDE_PARSE val=%r", ov)
+
+    return 1000.0
+# [ANCHOR:EQUITY_SOURCE] end
+
 # [ANCHOR:ORCH]
 class Orchestrator:
     def __init__(self) -> None:
@@ -635,11 +656,7 @@ class Orchestrator:
             snap = self.bus.snapshot()
             targets = self.risk.process_snapshot(snap)
 
-            eq = 0.0
-            try:
-                eq = float(self.risk._equity(snap))
-            except Exception:
-                pass
+            eq = resolve_equity(self.bus)
             long_used = sum(t["target_notional"] for t in targets if t["target_qty"] > 0.0)
             short_used = sum(t["target_notional"] for t in targets if t["target_qty"] < 0.0)
 
@@ -892,6 +909,10 @@ class Orchestrator:
                 bal = self.cli_trade.get_balance_usdt()
                 wb = float(bal.get("wallet", 0.0))
                 cw = float(bal.get("avail", 0.0))
+                if not hasattr(self.bus, "state"):
+                    class _S: pass
+                    self.bus.state = _S()
+                self.bus.state.equity_usdt = wb
                 self.bus.set_account({"ccy": "USDT", "totalWalletBalance": wb, "availableBalance": cw})
                 log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=REST", wb, cw)
                 backoff = period

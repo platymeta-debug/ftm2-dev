@@ -29,9 +29,9 @@ class AnalysisPublisher:
         ch_id = next((int(x) for x in ids if x and x.isdigit()), 0)
         if not ch_id:
             raise RuntimeError("No analysis-capable channel configured")
-
         ch = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
         return ch
+
 
     async def _ensure_message(self):
         ch = await self._ensure_channel()

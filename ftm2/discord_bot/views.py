@@ -1,50 +1,38 @@
-# -*- coding: utf-8 -*-
+"""Discord panel view and helpers."""
 # [ANCHOR:PANEL_VIEWS] begin
-import os, sqlite3, logging, contextlib
+import logging
 
-from ftm2.db import init_db
 import discord  # type: ignore
 
 log = logging.getLogger(__name__)
 
 
-def _db_path() -> str:
-    return os.getenv("DB_PATH", "./runtime/trader.db")
-
-
-def set_exec_active(conn, is_on: bool, source: str):
-    conn.execute(
-        """
-        INSERT INTO config(key, val) VALUES('exec.active', ?)
-        ON CONFLICT(key) DO UPDATE SET val=excluded.val
-        """,
-        ("1" if is_on else "0",),
-    )
-    conn.commit()
-    log.info("[EXEC] %s (source=%s)", "enabled" if is_on else "disabled", source)
-
-
-async def apply_exec_toggle(bus, active: bool, *, source="PANEL", orchestrator=None):
-    """버튼/명령으로 토글 시 StateBus + DB 반영(+오케스트레이터 알림)."""
-    prev = getattr(getattr(bus, "config", object()), "exec_active", None)
+# [ANCHOR:PANEL_TOGGLE_SAFE] begin
+async def apply_exec_toggle(bus, active: bool, *, orchestrator=None):
+    # StateBus 보장
     if not hasattr(bus, "config"):
-        class _Cfg: ...
+        class _Cfg: pass
         bus.config = _Cfg()
+    prev = getattr(bus.config, "exec_active", None)
     bus.config.exec_active = bool(active)
 
+    # 오케스트레이터에게 알림(있으면)
     if orchestrator and hasattr(orchestrator, "on_exec_toggle"):
         try:
             await orchestrator.on_exec_toggle(bool(active))
         except Exception:
             log.exception("E_ORCH_TOGGLE_CB")
 
+    # (선택) DB upsert는 기존 유틸 사용
     try:
-        with init_db(_db_path()) as conn:
-            set_exec_active(conn, bool(active), source)
-    except Exception as e:
-        log.warning("E_DB_UPSERT_EXEC_ACTIVE %r", e)
-    log.info("[EXEC] %s (source=%s, prev=%s)",
-             "enabled" if active else "disabled", source, prev)
+        from ftm2.panel import _db_upsert_exec_active
+        _db_upsert_exec_active(bool(active))
+    except Exception:
+        pass
+
+    log.info("[EXEC] %s (source=PANEL, prev=%s)",
+             "enabled" if active else "disabled", prev)
+# [ANCHOR:PANEL_TOGGLE_SAFE] end
 
     try:
         router_active = getattr(getattr(bus, "exec_router", object()), "cfg", object()).active
@@ -67,14 +55,14 @@ try:
                            style=discord.ButtonStyle.success,
                            custom_id="ftm2:exec:on")
         async def btn_on(self, interaction: "discord.Interaction", button: "discord.ui.Button"):
-            await apply_exec_toggle(self.bus, True, source="PANEL", orchestrator=self.orch)
+            await apply_exec_toggle(self.bus, True, orchestrator=self.orch)
             await interaction.response.send_message("✅ 자동 매매: **ON**", ephemeral=True)
 
         @discord.ui.button(label="자동 매매 OFF",
                            style=discord.ButtonStyle.danger,
                            custom_id="ftm2:exec:off")
         async def btn_off(self, interaction: "discord.Interaction", button: "discord.ui.Button"):
-            await apply_exec_toggle(self.bus, False, source="PANEL", orchestrator=self.orch)
+            await apply_exec_toggle(self.bus, False, orchestrator=self.orch)
             await interaction.response.send_message("🛑 자동 매매: **OFF**", ephemeral=True)
 except Exception:
     pass
