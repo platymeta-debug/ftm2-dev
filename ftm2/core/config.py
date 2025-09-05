@@ -679,7 +679,7 @@ def load_backtest_cfg(cfg_db) -> _BacktestCfgView:
 @dataclass
 class _ModesCfgView:
     data_mode: str   # live | testnet | replay
-    trade_mode: str  # dry  | testnet | live
+    trade_mode: str  # dry  | testnet | live | auto
 
 
 # [ANCHOR:DUAL_MODE]
@@ -704,10 +704,10 @@ def load_modes_cfg(cfg_db) -> _ModesCfgView:
         return v if v not in (None, "") else d
 
     dm = (gdb("modes.data") or genv("DATA_MODE") or "live").lower()
-    tm = (gdb("modes.trade") or genv("TRADE_MODE") or "dry").lower()
+    tm = (gdb("modes.trade") or genv("TRADE_MODE") or "auto").lower()
     if dm not in ("live", "testnet", "replay"):
         dm = "live"
-    if tm not in ("dry", "testnet", "live"):
-        tm = "dry"
+    if tm not in ("dry", "testnet", "live", "auto"):
+        tm = "auto"
     return _ModesCfgView(dm, tm)
 

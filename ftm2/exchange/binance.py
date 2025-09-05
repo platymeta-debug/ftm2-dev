@@ -185,6 +185,89 @@ class BinanceClient:
         },
     }
 
+    # --- helpers: unified key loader & env auto-detect ------------------
+    @staticmethod
+    def _load_keypair_unified(prefer: str | None = None) -> tuple[str, str]:
+        """
+        우선순위:
+          1) 공통: BINANCE_API_KEY / BINANCE_API_SECRET
+             (또는 BINANCE_KEY / BINANCE_SECRET, TOKEN / TOKEN_SECRET 호환)
+          2) 선호(prefer)가 지정되면 해당 환경 키를 가산:
+             prefer == "live"    -> BINANCE_LIVE_API_KEY / _SECRET
+             prefer == "testnet" -> BINANCE_TESTNET_API_KEY / _SECRET
+          3) 마지막 백업으로 서로 다른 환경 변수 중 먼저 발견되는 값 사용
+        """
+        import os
+        key = (
+            os.getenv("BINANCE_API_KEY")
+            or os.getenv("BINANCE_KEY")
+            or os.getenv("TOKEN")
+            or ""
+        )
+        secret = (
+            os.getenv("BINANCE_API_SECRET")
+            or os.getenv("BINANCE_SECRET")
+            or os.getenv("TOKEN_SECRET")
+            or ""
+        )
+        # prefer 가 지정되면 그쪽 ENV로 보강
+        if prefer == "live":
+            key = os.getenv("BINANCE_LIVE_API_KEY") or key
+            secret = os.getenv("BINANCE_LIVE_API_SECRET") or secret
+        elif prefer == "testnet":
+            key = os.getenv("BINANCE_TESTNET_API_KEY") or key
+            secret = os.getenv("BINANCE_TESTNET_API_SECRET") or secret
+        else:
+            # 아무것도 없을 때 두 환경 것을 순서대로 시도
+            key = (
+                os.getenv("BINANCE_API_KEY")
+                or os.getenv("BINANCE_LIVE_API_KEY")
+                or os.getenv("BINANCE_TESTNET_API_KEY")
+                or key
+            )
+            secret = (
+                os.getenv("BINANCE_API_SECRET")
+                or os.getenv("BINANCE_LIVE_API_SECRET")
+                or os.getenv("BINANCE_TESTNET_API_SECRET")
+                or secret
+            )
+        return key or "", secret or ""
+
+    @staticmethod
+    def _detect_trade_env(api_key: str, timeout: float = 2.5) -> str:
+        """
+        주어진 API KEY가 어느 환경의 키인지 자동 판별.
+        - futures listenKey 생성(서명 불필요)을 testnet→live 순으로 시도
+        - 200이면 해당 환경
+        - 둘 다 실패하면 안전하게 'testnet'
+        """
+        if not api_key:
+            return "testnet"
+        headers = {"X-MBX-APIKEY": api_key}
+        post = None
+        try:
+            import httpx  # type: ignore
+            post = lambda url: httpx.post(url, headers=headers, timeout=timeout)
+        except Exception:
+            try:
+                import requests  # type: ignore
+                post = lambda url: requests.post(url, headers=headers, timeout=timeout)
+            except Exception:
+                return "testnet"
+        try:
+            r = post("https://testnet.binancefuture.com/fapi/v1/listenKey")
+            if getattr(r, "status_code", 0) == 200:
+                return "testnet"
+        except Exception:
+            pass
+        try:
+            r = post("https://fapi.binance.com/fapi/v1/listenKey")
+            if getattr(r, "status_code", 0) == 200:
+                return "live"
+        except Exception:
+            pass
+        return "testnet"
+
     def __init__(
         self,
         mode: str = "testnet",
@@ -226,32 +309,23 @@ class BinanceClient:
     # Factories
     # ------------------------------------------------------------------
     @classmethod
-    def from_env(cls, *, order_active: bool = False) -> "BinanceClient":
+    def from_env(cls, *, order_active: bool = True) -> "BinanceClient":
         """
-        ENV 로드 규칙:
-          MODE                 : testnet|live
-          BINANCE_TESTNET_*    : 테스트넷 키
-          BINANCE_LIVE_*       : 실계좌 키
-          REST_BASE_OVERRIDE   : 선택 오버라이드
-          WS_BASE_OVERRIDE     : 선택 오버라이드
+        MODE: 'auto' | 'testnet' | 'live' | 'dry'
+        - 공통 키(BINANCE_API_KEY/SECRET) 우선
+        - 환경별 키(BINANCE_TESTNET_* / BINANCE_LIVE_*) 하위 호환
         """
-        mode = (mode or os.getenv("TRADE_MODE") or os.getenv("MODE") or "testnet").lower()
-        if mode == "live":
-            key = os.getenv("BINANCE_LIVE_API_KEY") or ""
-            secret = os.getenv("BINANCE_LIVE_API_SECRET") or ""
-        else:
-            key = os.getenv("BINANCE_TESTNET_API_KEY") or ""
-            secret = os.getenv("BINANCE_TESTNET_API_SECRET") or ""
-
-        cli = cls(mode, key, secret, order_active=order_active)
-        # 부팅 요약
-        log.info(
-            "[BOOT_ENV_SUMMARY] MODE=%s, APIKEY=%s, REST_BASE=%s, WS_BASE=%s",
-            mode, "EMPTY" if not key else "SET", cli.rest_base, cli.ws_base
-        )
-        if not key:
-            log.warning("🔒 Binance API 키가 비어 있습니다. public 데이터만 동작하며 주문/계정 관련 기능은 비활성화됩니다.")
-        return cli
+        m = (os.getenv("MODE") or os.getenv("TRADE_MODE") or "auto").strip().lower()
+        if m == "dry":
+            return cls("testnet", "", "", order_active=False)
+        if m == "auto":
+            key, secret = cls._load_keypair_unified()
+            env = cls._detect_trade_env(key)
+            return cls(env, key, secret, order_active=order_active)
+        if m not in ("testnet", "live"):
+            m = "testnet"
+        key, secret = cls._load_keypair_unified(prefer=m)
+        return cls(m, key, secret, order_active=order_active)
 
     # [ANCHOR:DUAL_MODE]
     @classmethod
@@ -266,15 +340,23 @@ class BinanceClient:
         )
 
     @classmethod
-    def for_trade(cls, mode: str = "testnet", order_active: bool = False) -> "BinanceClient":
+    def for_trade(cls, mode: str, order_active: bool = True) -> "BinanceClient":
         """
-        주문/유저스트림 전용 클라이언트.
-        mode: dry | testnet | live
-        dry → 테스트넷 엔드포인트, 주문 비활성화
+        mode: 'auto' | 'live' | 'testnet' | 'dry'
+        - 'auto' : 공통 키를 읽고 환경을 자동 감지하여 해당 환경으로 거래
+        - 그 외  : 지정된 환경으로 거래 (공통 키 우선, 환경별 키 후순위)
         """
-        if mode == "dry":
-            return cls(mode="testnet", order_active=False)
-        return cls(mode=("live" if mode == "live" else "testnet"), order_active=order_active)
+        m = (mode or "auto").lower()
+        if m == "dry":
+            return cls("testnet", "", "", order_active=False)
+        if m == "auto":
+            key, secret = cls._load_keypair_unified()
+            env = cls._detect_trade_env(key)
+            return cls(env, key, secret, order_active=order_active)
+        if m not in ("live", "testnet"):
+            m = "testnet"
+        key, secret = cls._load_keypair_unified(prefer=m)
+        return cls(m, key, secret, order_active=order_active)
 
     # ------------------------------------------------------------------
     # HTTP driver binding
