@@ -27,6 +27,11 @@ from typing import Callable, Optional, Dict, Any, List
 
 from .http_driver import HttpDriver
 
+try:
+    from ftm2.core.env import load_env_chain
+except Exception:  # pragma: no cover
+    from core.env import load_env_chain  # type: ignore
+
 _http_drv = HttpDriver()
 
 
@@ -56,6 +61,14 @@ except Exception:  # pragma: no cover
 log = logging.getLogger("binance.client")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+_BINANCE_ERROR_HINTS = {
+    -2015: "API 키 또는 권한 오류",
+    -2019: "잔고 부족",
+    -2022: "reduceOnly 위반 또는 포지션 없음",
+    -1111: "값 범위 또는 소수 자릿수 오류",
+    -1022: "시그니처 검증 실패",
+}
 
 
 # [ANCHOR:WS_MANAGER] begin
@@ -276,7 +289,7 @@ class BinanceClient:
         *,
         rest_base: Optional[str] = None,
         ws_base: Optional[str] = None,
-        recv_window_ms: int = 5000,
+        recv_window_ms: int = 30000,
         order_active: bool = False,  # 기본 False → 스텁 반환
         http_timeout: float = 10.0,
     ) -> None:
@@ -289,7 +302,8 @@ class BinanceClient:
         self.ws_base = (ws_base or os.getenv("WS_BASE_OVERRIDE") or defaults["ws"]).rstrip("/")
         self.key = key or ""
         self.secret = secret or ""
-        self.recv_window_ms = recv_window_ms
+        self.recv_window_ms = int(os.getenv("BINANCE_RECV_WINDOW", str(recv_window_ms)))
+        self._clock_offset_ms = 0
         self.order_active = order_active
         self.http_timeout = http_timeout
 
@@ -305,27 +319,53 @@ class BinanceClient:
             _WS_HAVE or "none",
         )
 
+    def sync_time(self) -> None:
+        t0 = int(time.time() * 1000)
+        r = self._http_request("GET", "/v1/time")
+        t1 = int(time.time() * 1000)
+        if not r.get("ok"):
+            raise RuntimeError("TIME_SYNC_FAIL")
+        server_ms = (r.get("data") or {}).get("serverTime")
+        if isinstance(server_ms, (int, float)):
+            self._clock_offset_ms = int(server_ms - (t0 + t1) // 2)
+
+    def _now_ms(self) -> int:
+        return int(time.time() * 1000 + self._clock_offset_ms)
+
     # ------------------------------------------------------------------
     # Factories
     # ------------------------------------------------------------------
     @classmethod
-    def from_env(cls, *, order_active: bool = True) -> "BinanceClient":
-        """
-        MODE: 'auto' | 'testnet' | 'live' | 'dry'
-        - 공통 키(BINANCE_API_KEY/SECRET) 우선
-        - 환경별 키(BINANCE_TESTNET_* / BINANCE_LIVE_*) 하위 호환
-        """
-        m = (os.getenv("MODE") or os.getenv("TRADE_MODE") or "auto").strip().lower()
-        if m == "dry":
-            return cls("testnet", "", "", order_active=False)
-        if m == "auto":
-            key, secret = cls._load_keypair_unified()
-            env = cls._detect_trade_env(key)
-            return cls(env, key, secret, order_active=order_active)
-        if m not in ("testnet", "live"):
-            m = "testnet"
-        key, secret = cls._load_keypair_unified(prefer=m)
-        return cls(m, key, secret, order_active=order_active)
+    def from_env(
+        cls,
+        *,
+        for_trade: bool = True,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+    ) -> "BinanceClient":
+        load_env_chain()
+        mode = (os.getenv("MODE") or "testnet").lower()
+        if mode not in ("testnet", "live"):
+            mode = "testnet"
+        key = (
+            api_key
+            or os.getenv("BINANCE_API_KEY")
+            or os.getenv(f"BINANCE_{mode.upper()}_API_KEY")
+        )
+        secret = (
+            api_secret
+            or os.getenv("BINANCE_API_SECRET")
+            or os.getenv(f"BINANCE_{mode.upper()}_API_SECRET")
+        )
+        if for_trade and (not key or not secret):
+            raise RuntimeError("BINANCE API key/secret not found in env")
+        cli = cls(mode, key or "", secret or "", order_active=for_trade)
+        if for_trade:
+            try:
+                cli.sync_time()
+            except Exception as e:  # pragma: no cover
+                log.warning("TIME_SYNC_FAIL: %s", e)
+        return cli
 
     # [ANCHOR:DUAL_MODE]
     @classmethod
@@ -348,15 +388,21 @@ class BinanceClient:
         """
         m = (mode or "auto").lower()
         if m == "dry":
-            return cls("testnet", "", "", order_active=False)
-        if m == "auto":
+            cli = cls("testnet", "", "", order_active=False)
+        elif m == "auto":
             key, secret = cls._load_keypair_unified()
             env = cls._detect_trade_env(key)
-            return cls(env, key, secret, order_active=order_active)
-        if m not in ("live", "testnet"):
-            m = "testnet"
-        key, secret = cls._load_keypair_unified(prefer=m)
-        return cls(m, key, secret, order_active=order_active)
+            cli = cls(env, key, secret, order_active=order_active)
+        else:
+            if m not in ("live", "testnet"):
+                m = "testnet"
+            key, secret = cls._load_keypair_unified(prefer=m)
+            cli = cls(m, key, secret, order_active=order_active)
+        try:
+            cli.sync_time()
+        except Exception as e:  # pragma: no cover
+            log.warning("TIME_SYNC_FAIL: %s", e)
+        return cli
 
     # ------------------------------------------------------------------
     # HTTP driver binding
@@ -387,13 +433,15 @@ class BinanceClient:
     # HTTP helpers
     # ------------------------------------------------------------------
     def _http_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
-                      signed: bool = False, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                      signed: bool = False, headers: Optional[Dict[str, str]] = None,
+                      _retried: bool = False) -> Dict[str, Any]:
         if self.http not in ("httpx", "requests"):
             return _err("E_CONN_FAIL", "HTTP driver not available (install httpx or requests)")
 
         base = self.rest_base.rstrip("/")
         url = f"{base}{path}"
         params = dict(params or {})
+        orig_params = dict(params)
 
         # futures REST는 /fapi/* 하위
         if not path.startswith("/fapi/"):
@@ -401,12 +449,13 @@ class BinanceClient:
 
         # 서명
         hdrs = dict(headers or {})
+        orig_hdrs = dict(hdrs)
         if signed:
             if not self.key or not self.secret:
                 return _err("E_KEY_EMPTY", "API key/secret required", path=path)
             hdrs["X-MBX-APIKEY"] = self.key
-            params["timestamp"] = _now_ms()
-            params["recvWindow"] = self.recv_window_ms
+            params.setdefault("recvWindow", self.recv_window_ms)
+            params["timestamp"] = self._now_ms()
             query = "&".join(f"{k}={params[k]}" for k in sorted(params))
             sig = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
             params["signature"] = sig
@@ -452,8 +501,39 @@ class BinanceClient:
             return _err("E_CONN_FAIL", f"{e}", url=url, path=path)
 
         if status >= 400:
-            # 429 → 레이트리밋 등도 여기로
-            return _err("E_HTTP_STATUS", f"HTTP {status}", url=url, path=path, body=text)
+            err: Dict[str, Any] = {}
+            try:
+                err = json.loads(text) if text else {}
+            except Exception:
+                err = {"msg": text}
+            code = err.get("code")
+            msg = err.get("msg")
+            ts_err = (code == -1021) or ("Timestamp" in str(msg))
+            if signed and ts_err and not _retried:
+                try:
+                    self.sync_time()
+                except Exception as e:  # pragma: no cover
+                    log.warning("TIME_SYNC_FAIL: %s", e)
+                return self._http_request(
+                    method,
+                    path,
+                    params=orig_params,
+                    signed=signed,
+                    headers=orig_hdrs,
+                    _retried=True,
+                )
+            log.warning(
+                "[BINANCE_HTTP_ERR] %s %s code=%s msg=%s", method, path, code, msg
+            )
+            return _err(
+                "E_HTTP_STATUS",
+                f"HTTP {status}",
+                url=url,
+                path=path,
+                body=text,
+                binance_code=code,
+                binance_msg=msg,
+            )
 
         try:
             data = json.loads(text) if text else {}
@@ -535,18 +615,24 @@ class BinanceClient:
         if not self.key or not self.secret:
             return None
         r = self._http_request("GET", "/v2/balance", signed=True)
-        if not r.get("ok"):
+        if r.get("ok"):
+            data = r.get("data") or []
+            usdt = next((x for x in data if x.get("asset") == "USDT"), None)
+            if usdt:
+                try:
+                    return float(usdt.get("balance") or usdt.get("crossWalletBalance") or 0.0)
+                except Exception:
+                    pass
+        alt = self._http_request("GET", "/v2/account", signed=True)
+        if not alt.get("ok"):
             return None
-        data = r.get("data") or []
-        usdt = next((x for x in data if x.get("asset") == "USDT"), None)
-        if not usdt:
-            return None
+        d = alt.get("data") or {}
         try:
-            return float(usdt.get("balance") or usdt.get("crossWalletBalance"))
+            return float(d.get("totalMarginBalance") or d.get("totalWalletBalance") or 0.0)
         except Exception:
             return None
 
-    def create_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
         주문 스텁: 기본은 실제 전송하지 않고 E_ORDER_STUB 반환.
         M3에서 order_active(True) 또는 ENV로 활성화 예정.
@@ -554,9 +640,25 @@ class BinanceClient:
         기대 payload 예:
           {"symbol":"BTCUSDT","side":"BUY","type":"MARKET","quantity":"0.001","newClientOrderId":"..."}
         """
-        if not self.order_active:
+        path = "/v1/order/test" if validate_only else "/v1/order"
+        if not self.order_active and not validate_only:
             return _err("E_ORDER_STUB", "order endpoint is stubbed (disabled)", payload=payload)
-        return self._http_request("POST", "/v1/order", params=payload, signed=True)
+        r = self._http_request("POST", path, params=payload, signed=True)
+        if not r.get("ok"):
+            err = r.get("error") or {}
+            ctx = err.get("ctx") or {}
+            code = ctx.get("binance_code") or ctx.get("code")
+            msg = ctx.get("binance_msg") or ctx.get("msg")
+            reason = None
+            try:
+                reason = _BINANCE_ERROR_HINTS.get(int(code))
+            except Exception:
+                reason = None
+            if reason:
+                log.warning("[ORDER_FAIL] code=%s msg=%s (%s)", code, msg, reason)
+            else:
+                log.warning("[ORDER_FAIL] code=%s msg=%s", code, msg)
+        return r
 # [ANCHOR:BINANCE_CLIENT] end
 
     # ------------------------------------------------------------------
