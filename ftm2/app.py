@@ -251,9 +251,10 @@ class Orchestrator:
             pass
 
         modes = load_modes_cfg(self.db)
+        exv = load_exec_cfg(self.db)
         # [ANCHOR:DUAL_MODE]
         self.cli_data = BinanceClient.for_data(modes.data_mode)
-        self.cli_trade = BinanceClient.for_trade(modes.trade_mode, order_active=True)
+        self.cli_trade = BinanceClient.for_trade(modes.trade_mode, order_active=exv.active)
         self.streams = StreamManager(
             self.cli_data,
             None if modes.trade_mode == "dry" else self.cli_trade,
@@ -291,7 +292,6 @@ class Orchestrator:
             ),
         )
 
-        exv = load_exec_cfg(self.db)
         self.exec_router = OrderRouter(
             self.cli_trade,
             ExecConfig(
