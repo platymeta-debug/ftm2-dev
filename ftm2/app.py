@@ -214,6 +214,7 @@ def init_account_bus(bus) -> None:
         except Exception:
             pass
 
+
         snap = cli.account_snapshot()
         if snap:
             bus.set_account({
@@ -233,6 +234,7 @@ def init_account_bus(bus) -> None:
                 snap.get("equity", 0.0),
                 snap.get("upnl", 0.0),
                 snap.get("avail", 0.0),
+
             )
 
         syms = env_list("SYMBOLS") or []
@@ -1079,6 +1081,7 @@ class Orchestrator:
                     "equity": snap.get("equity", 0.0),
                 })
                 log.info("[EQUITY] bootstrap: totalMarginBalance=%.2f", snap.get("equity", 0.0))
+
                 try:
                     k = self.kpi.compute(self.bus.snapshot())
                     cur = self.bus.snapshot().get("monitor") or {}
@@ -1207,12 +1210,14 @@ class Orchestrator:
                         "equity": snap.get("equity", 0.0),
                     })
                     log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", snap.get("equity", 0.0))
+
                     try:
                         k = self.kpi.compute(self.bus.snapshot())
                         cur = self.bus.snapshot().get("monitor") or {}
                         self.bus.set_monitor_state({**cur, "kpi": k})
                     except Exception:
                         pass
+
             except Exception as e:
                 log.warning("E_EQUITY_POLL_FAIL %s", e)
             try:

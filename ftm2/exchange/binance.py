@@ -644,9 +644,11 @@ class BinanceClient:
         except Exception:
             return None
 
+
     # --- 계정 스냅샷 ---------------------------------------------------
     def account_snapshot(self) -> Dict[str, Any]:
         """/fapi/v2/account에서 잔고/포지션을 한 번에 가져온다."""
+
         r = self._http_request("GET", "/v2/account", signed=True)
         if not r.get("ok"):
             return {}
@@ -675,6 +677,7 @@ class BinanceClient:
     def equity(self) -> float:
         try:
             return float(self.account_snapshot().get("equity", 0.0))
+
         except Exception:
             return 0.0
 
@@ -715,6 +718,7 @@ class BinanceClient:
             }
         return out
 
+
     # --- 포지션 리스크 조회 -------------------------------------------
     def positions_risk(self, symbols: List[str] | None = None) -> List[Dict[str, Any]]:
         params: Dict[str, Any] = {}
@@ -724,6 +728,7 @@ class BinanceClient:
         if not r.get("ok"):
             return []
         return r.get("data") or []
+
 
     def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
