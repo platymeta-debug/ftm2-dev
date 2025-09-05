@@ -28,9 +28,15 @@ from typing import Callable, Optional, Dict, Any, List
 from .http_driver import HttpDriver
 
 try:
-    from ftm2.core.env import load_env_chain
+    from ftm2.core.env import (
+        load_env_chain,
+        load_binance_credentials,
+    )
 except Exception:  # pragma: no cover
     from core.env import load_env_chain  # type: ignore
+    from core.env import load_binance_credentials  # type: ignore
+
+LIVE_MARK_WS = "wss://fstream.binance.com/ws"  # 시장 데이터는 항상 라이브
 
 _http_drv = HttpDriver()
 
@@ -383,21 +389,23 @@ class BinanceClient:
     def for_trade(cls, mode: str, order_active: bool = True) -> "BinanceClient":
         """
         mode: 'auto' | 'live' | 'testnet' | 'dry'
-        - 'auto' : 공통 키를 읽고 환경을 자동 감지하여 해당 환경으로 거래
-        - 그 외  : 지정된 환경으로 거래 (공통 키 우선, 환경별 키 후순위)
+        - 'auto' : load_binance_credentials() 로 자동 환경 감지
+        - 그 외  : 해당 환경으로 강제 지정
         """
         m = (mode or "auto").lower()
         if m == "dry":
             cli = cls("testnet", "", "", order_active=False)
-        elif m == "auto":
-            key, secret = cls._load_keypair_unified()
-            env = cls._detect_trade_env(key)
-            cli = cls(env, key, secret, order_active=order_active)
         else:
-            if m not in ("live", "testnet"):
-                m = "testnet"
-            key, secret = cls._load_keypair_unified(prefer=m)
-            cli = cls(m, key, secret, order_active=order_active)
+            creds = load_binance_credentials()
+            if m == "auto":
+                env = creds.env
+            elif m == "live":
+                env = "live"
+            elif m == "testnet":
+                env = "testnet"
+            else:
+                env = "testnet"
+            cli = cls(env, creds.api_key, creds.api_secret, order_active=order_active)
         try:
             cli.sync_time()
         except Exception as e:  # pragma: no cover
@@ -631,6 +639,74 @@ class BinanceClient:
             return float(d.get("totalMarginBalance") or d.get("totalWalletBalance") or 0.0)
         except Exception:
             return None
+
+    # --- 신규: 통합 잔고/에쿼티 조회 -----------------------------------
+    def fetch_account_equity(self) -> Dict[str, float]:
+        """/fapi/v2/account 기반의 잔고 정보를 반환한다."""
+        r = self._http_request("GET", "/v2/account", signed=True)
+        if not r.get("ok"):
+            return {}
+        d = r.get("data") or {}
+        try:
+            wallet = float(d.get("totalWalletBalance") or 0.0)
+            upnl = float(d.get("totalUnrealizedProfit") or 0.0)
+            equity = float(d.get("totalMarginBalance") or (wallet + upnl))
+            avail = 0.0
+            for a in d.get("assets", []):
+                if (a.get("asset") or "").upper() == "USDT":
+                    try:
+                        avail = float(a.get("availableBalance") or 0.0)
+                    except Exception:
+                        avail = 0.0
+                    break
+            return {"wallet": wallet, "equity": equity, "upnl": upnl, "avail": avail}
+        except Exception:
+            return {}
+
+    # 간편 equity 조회
+    def equity(self) -> float:
+        eq = self.fetch_account_equity()
+        try:
+            return float(eq.get("equity", 0.0))
+        except Exception:
+            return 0.0
+
+    # --- 신규: 포지션 조회 ---------------------------------------------
+    def fetch_positions(self, symbols: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
+        """/fapi/v2/account 의 positions 필드를 사용해 현재 포지션을 조회한다."""
+        r = self._http_request("GET", "/v2/account", signed=True)
+        if not r.get("ok"):
+            return {}
+        data = r.get("data") or {}
+        out: Dict[str, Dict[str, Any]] = {}
+        pos_list = data.get("positions") or []
+        for p in pos_list:
+            sym = (p.get("symbol") or "").upper()
+            if not sym:
+                continue
+            if symbols and sym not in symbols:
+                continue
+            try:
+                qty = float(p.get("positionAmt") or 0.0)
+            except Exception:
+                qty = 0.0
+            if abs(qty) == 0:
+                continue
+            try:
+                ep = float(p.get("entryPrice") or 0.0)
+                up = float(p.get("unrealizedProfit")) if "unrealizedProfit" in p else float(p.get("unRealizedProfit", 0.0))
+                lev = float(p.get("leverage") or 0.0)
+            except Exception:
+                ep = up = lev = 0.0
+            out[sym] = {
+                "symbol": sym,
+                "pa": qty,
+                "ep": ep,
+                "up": up,
+                "leverage": lev,
+                "marginType": p.get("marginType"),
+            }
+        return out
 
     def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
