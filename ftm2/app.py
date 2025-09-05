@@ -49,11 +49,11 @@ except Exception:  # pragma: no cover
 
 try:
     from ftm2.core.config import load_modes_cfg
-    from ftm2.exchange.binance import BinanceClient
+    from ftm2.exchange.binance import BinanceClient, get_klines
     from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
     from core.config import load_modes_cfg  # type: ignore
-    from exchange.binance import BinanceClient  # type: ignore
+    from exchange.binance import BinanceClient, get_klines  # type: ignore
     from data.streams import StreamManager  # type: ignore
 
 try:
@@ -166,6 +166,27 @@ except Exception:  # pragma: no cover
 log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# [ANCHOR:EQUITY_SOURCE] begin
+def resolve_equity(bus) -> float:
+    """계정 폴링 값이 있으면 최우선, 그다음 OVERRIDE, 없으면 기본 1000."""
+    acct_eq = None
+    try:
+        acct_eq = getattr(getattr(bus, "state", object()), "equity_usdt", None)
+    except Exception:
+        acct_eq = None
+    if isinstance(acct_eq, (int, float)) and acct_eq > 0:
+        return float(acct_eq)
+
+    ov = os.getenv("RISK_EQUITY_OVERRIDE", "").strip()
+    if ov:
+        try:
+            return float(ov)
+        except ValueError:
+            log.warning("E_EQUITY_OVERRIDE_PARSE val=%r", ov)
+
+    return 1000.0
+# [ANCHOR:EQUITY_SOURCE] end
 
 # [ANCHOR:ORCH]
 class Orchestrator:
@@ -635,11 +656,7 @@ class Orchestrator:
             snap = self.bus.snapshot()
             targets = self.risk.process_snapshot(snap)
 
-            eq = 0.0
-            try:
-                eq = float(self.risk._equity(snap))
-            except Exception:
-                pass
+            eq = resolve_equity(self.bus)
             long_used = sum(t["target_notional"] for t in targets if t["target_qty"] > 0.0)
             short_used = sum(t["target_notional"] for t in targets if t["target_qty"] < 0.0)
 
@@ -892,6 +909,10 @@ class Orchestrator:
                 bal = self.cli_trade.get_balance_usdt()
                 wb = float(bal.get("wallet", 0.0))
                 cw = float(bal.get("avail", 0.0))
+                if not hasattr(self.bus, "state"):
+                    class _S: pass
+                    self.bus.state = _S()
+                self.bus.state.equity_usdt = wb
                 self.bus.set_account({"ccy": "USDT", "totalWalletBalance": wb, "availableBalance": cw})
                 log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=REST", wb, cw)
                 backoff = period
@@ -907,21 +928,21 @@ class Orchestrator:
     def _warmup(self, n: int = 800) -> None:
         for s in self.symbols:
             for tf in self.kline_intervals:
-                r = self.cli_data.klines(s, tf, limit=n)
-                if not r.get("ok"):
-                    log.warning("[WARMUP_FAIL] %s %s %s", s, tf, r.get("error"))
+                try:
+                    rows = get_klines(s, tf, limit=n)
+                except Exception as e:
+                    log.warning("WARMUP_FAIL %s %s %s", s, tf, e)
                     continue
-                rows = r.get("data", [])
-                for row in rows:
+                for r in rows:
                     try:
                         bar = {
-                            "t": int(row[0]),
-                            "T": int(row[6]),
-                            "o": float(row[1]),
-                            "h": float(row[2]),
-                            "l": float(row[3]),
-                            "c": float(row[4]),
-                            "v": float(row[5]),
+                            "t": int(r[0]),
+                            "T": int(r[6]),
+                            "o": float(r[1]),
+                            "h": float(r[2]),
+                            "l": float(r[3]),
+                            "c": float(r[4]),
+                            "v": float(r[5]),
                             "x": True,
                         }
                     except Exception:
