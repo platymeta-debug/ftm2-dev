@@ -632,6 +632,63 @@ class BinanceClient:
         except Exception:
             return None
 
+    # --- 신규: 통합 잔고/에쿼티 조회 -----------------------------------
+    def fetch_account_equity(self) -> Dict[str, float]:
+        """/fapi/v2/account 기반의 잔고 정보를 반환한다."""
+        r = self._http_request("GET", "/v2/account", signed=True)
+        if not r.get("ok"):
+            return {}
+        d = r.get("data") or {}
+        try:
+            wallet = float(d.get("totalWalletBalance") or 0.0)
+            upnl = float(d.get("totalUnrealizedProfit") or 0.0)
+            equity = float(d.get("totalMarginBalance") or (wallet + upnl))
+            avail = 0.0
+            for a in d.get("assets", []):
+                if (a.get("asset") or "").upper() == "USDT":
+                    try:
+                        avail = float(a.get("availableBalance") or 0.0)
+                    except Exception:
+                        avail = 0.0
+                    break
+            return {"wallet": wallet, "equity": equity, "upnl": upnl, "avail": avail}
+        except Exception:
+            return {}
+
+    # --- 신규: 포지션 조회 ---------------------------------------------
+    def fetch_positions(self, symbols: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
+        """/fapi/v2/positionRisk 기반의 포지션 맵을 반환."""
+        params: Dict[str, Any] = {}
+        if symbols:
+            try:
+                params["symbols"] = json.dumps(symbols)
+            except Exception:
+                pass
+        r = self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
+        if not r.get("ok"):
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for p in r.get("data") or []:
+            sym = (p.get("symbol") or "").upper()
+            if not sym:
+                continue
+            try:
+                pa = float(p.get("positionAmt", 0.0))
+                ep = float(p.get("entryPrice", 0.0))
+                up = float(p.get("unRealizedProfit", 0.0))
+                lev = float(p.get("leverage", 0.0))
+            except Exception:
+                pa = ep = up = lev = 0.0
+            out[sym] = {
+                "symbol": sym,
+                "pa": pa,
+                "ep": ep,
+                "up": up,
+                "leverage": lev,
+                "marginType": p.get("marginType"),
+            }
+        return out
+
     def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
         주문 스텁: 기본은 실제 전송하지 않고 E_ORDER_STUB 반환.

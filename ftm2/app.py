@@ -205,7 +205,44 @@ def init_account_bus(bus) -> None:
         return
 
     log.info("[ACCOUNT] scope=%s key=%s secret=%s", scope, _mask(k), _mask(s))
-    # TODO: 실제 연결/폴링 start
+
+    # 계정/포지션 초기화
+    try:
+        cli = BinanceClient(scope, k or "", s or "", order_active=False)
+        try:
+            cli.sync_time()
+        except Exception:
+            pass
+
+        eq = cli.fetch_account_equity()
+        if eq:
+            bus.set_account({
+                "ccy": "USDT",
+                "totalWalletBalance": eq.get("wallet", 0.0),
+                "availableBalance": eq.get("avail", 0.0),
+                "totalUnrealizedProfit": eq.get("upnl", 0.0),
+                "totalMarginBalance": eq.get("equity", 0.0),
+                "wallet": eq.get("wallet", 0.0),
+                "avail": eq.get("avail", 0.0),
+                "upnl": eq.get("upnl", 0.0),
+                "equity": eq.get("equity", 0.0),
+            })
+            log.info(
+                "[ACCOUNT_INIT] wallet=%.2f equity=%.2f upnl=%.2f avail=%.2f",
+                eq.get("wallet", 0.0),
+                eq.get("equity", 0.0),
+                eq.get("upnl", 0.0),
+                eq.get("avail", 0.0),
+            )
+
+        syms = env_list("SYMBOLS") or []
+        if syms:
+            pos = cli.fetch_positions(syms)
+            if pos:
+                bus.set_positions(pos)
+                log.info("[ACCOUNT_INIT] positions loaded n=%d", len(pos))
+    except Exception as e:
+        log.warning("[ACCOUNT_INIT] failed: %s", e)
 # [ANCHOR:KEY_SELECT] end
 
 

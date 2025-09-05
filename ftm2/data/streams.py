@@ -208,6 +208,24 @@ class StreamManager:
             if evt == "ACCOUNT_UPDATE":
                 a = msg.get("a") or {}
                 # [ANCHOR:WS_ON_USER] begin
+                pos_map: Dict[str, Dict[str, Any]] = {}
+                up_sum = 0.0
+                for p in a.get("P", []):
+                    sym = (p.get("s") or "").upper()
+                    if not sym:
+                        continue
+                    up = float(p.get("up", 0.0))
+                    pos_map[sym] = {
+                        "symbol": sym,
+                        "pa": float(p.get("pa", 0.0)),
+                        "ep": float(p.get("ep", 0.0)),
+                        "up": up,
+                        "mt": p.get("mt"),
+                    }
+                    up_sum += up
+                if pos_map:
+                    self.bus.set_positions(pos_map)
+
                 bal = None
                 for b in a.get("B", []):
                     if (b.get("a") or "").upper() == "USDT":
@@ -216,28 +234,26 @@ class StreamManager:
                 if bal:
                     wb = float(bal.get("wb", 0.0))
                     cw = float(bal.get("cw", 0.0))
+                    eq = wb + up_sum
                     self.bus.set_account({
                         "ccy": "USDT",
                         "totalWalletBalance": wb,
                         "availableBalance": cw,
+                        "totalUnrealizedProfit": up_sum,
+                        "totalMarginBalance": eq,
+                        "wallet": wb,
+                        "avail": cw,
+                        "upnl": up_sum,
+                        "equity": eq,
                     })
-                    log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=USER", wb, cw)
+                    log.info(
+                        "[EQUITY] updated: wallet=%.2f upnl=%.2f equity=%.2f avail=%.2f src=USER",
+                        wb,
+                        up_sum,
+                        eq,
+                        cw,
+                    )
                     self._last_account_ts = time.time()
-                # positions array → {symbol: {...}} 로 단순 매핑
-                pos_map: Dict[str, Dict[str, Any]] = {}
-                for p in a.get("P", []):
-                    sym = (p.get("s") or "").upper()
-                    if not sym:
-                        continue
-                    pos_map[sym] = {
-                        "symbol": sym,
-                        "pa": float(p.get("pa", 0.0)),
-                        "ep": float(p.get("ep", 0.0)),
-                        "up": float(p.get("up", 0.0)),
-                        "mt": p.get("mt"),
-                    }
-                if pos_map:
-                    self.bus.set_positions(pos_map)
                 # [ANCHOR:WS_ON_USER] end
             elif evt == "ORDER_TRADE_UPDATE":
                 o = msg.get("o") or {}
