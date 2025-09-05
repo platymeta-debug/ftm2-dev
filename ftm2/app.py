@@ -49,11 +49,11 @@ except Exception:  # pragma: no cover
 
 try:
     from ftm2.core.config import load_modes_cfg
-    from ftm2.exchange.binance import BinanceClient
+    from ftm2.exchange.binance import BinanceClient, get_klines
     from ftm2.data.streams import StreamManager
 except Exception:  # pragma: no cover
     from core.config import load_modes_cfg  # type: ignore
-    from exchange.binance import BinanceClient  # type: ignore
+    from exchange.binance import BinanceClient, get_klines  # type: ignore
     from data.streams import StreamManager  # type: ignore
 
 try:
@@ -167,6 +167,67 @@ log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+# [ANCHOR:KEY_SELECT] begin
+def _mask(s: str | None, keep: int = 4) -> str:
+    if not s:
+        return ""
+    s = str(s)
+    return s[:keep] + "*" * max(0, len(s) - keep - 2) + s[-2:]
+
+
+def _pick_keys(trade_mode: str):
+    if (trade_mode or "").lower() == "live":
+        k = os.getenv("BINANCE_API_KEY")
+        s = os.getenv("BINANCE_API_SECRET")
+        scope = "live"
+    else:
+        k = os.getenv("BINANCE_TESTNET_API_KEY")
+        s = os.getenv("BINANCE_TESTNET_API_SECRET")
+        scope = "testnet"
+    return scope, k, s
+
+
+def init_account_bus(bus) -> None:
+    import logging
+
+    log = logging.getLogger("ftm2.orch")
+    tm = os.getenv("TRADE_MODE", "testnet")
+    scope, k, s = _pick_keys(tm)
+
+    use_user = env_bool("USE_USER", False)
+    if not use_user:
+        log.info("[ACCOUNT] user stream disabled (USE_USER=0)")
+        return
+
+    if not k or not s:
+        log.warning("E_BAL_POLL_FAIL scope=%s reason=NO_API_KEY", scope)
+        return
+
+    log.info("[ACCOUNT] scope=%s key=%s secret=%s", scope, _mask(k), _mask(s))
+    # TODO: 실제 연결/폴링 start
+# [ANCHOR:KEY_SELECT] end
+
+# [ANCHOR:EQUITY_SOURCE] begin
+def resolve_equity(bus) -> float:
+    """계정 폴링 값이 있으면 최우선, 그다음 OVERRIDE, 없으면 기본 1000."""
+    acct_eq = None
+    try:
+        acct_eq = getattr(getattr(bus, "state", object()), "equity_usdt", None)
+    except Exception:
+        acct_eq = None
+    if isinstance(acct_eq, (int, float)) and acct_eq > 0:
+        return float(acct_eq)
+
+    ov = os.getenv("RISK_EQUITY_OVERRIDE", "").strip()
+    if ov:
+        try:
+            return float(ov)
+        except ValueError:
+            log.warning("E_EQUITY_OVERRIDE_PARSE val=%r", ov)
+
+    return 1000.0
+# [ANCHOR:EQUITY_SOURCE] end
+
 # [ANCHOR:ORCH]
 class Orchestrator:
     def __init__(self) -> None:
@@ -178,6 +239,7 @@ class Orchestrator:
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.bus = StateBus()
+        init_account_bus(self.bus)
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -635,11 +697,7 @@ class Orchestrator:
             snap = self.bus.snapshot()
             targets = self.risk.process_snapshot(snap)
 
-            eq = 0.0
-            try:
-                eq = float(self.risk._equity(snap))
-            except Exception:
-                pass
+            eq = resolve_equity(self.bus)
             long_used = sum(t["target_notional"] for t in targets if t["target_qty"] > 0.0)
             short_used = sum(t["target_notional"] for t in targets if t["target_qty"] < 0.0)
 
@@ -892,6 +950,10 @@ class Orchestrator:
                 bal = self.cli_trade.get_balance_usdt()
                 wb = float(bal.get("wallet", 0.0))
                 cw = float(bal.get("avail", 0.0))
+                if not hasattr(self.bus, "state"):
+                    class _S: pass
+                    self.bus.state = _S()
+                self.bus.state.equity_usdt = wb
                 self.bus.set_account({"ccy": "USDT", "totalWalletBalance": wb, "availableBalance": cw})
                 log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=REST", wb, cw)
                 backoff = period
@@ -907,21 +969,28 @@ class Orchestrator:
     def _warmup(self, n: int = 800) -> None:
         for s in self.symbols:
             for tf in self.kline_intervals:
-                r = self.cli_data.klines(s, tf, limit=n)
-                if not r.get("ok"):
-                    log.warning("[WARMUP_FAIL] %s %s %s", s, tf, r.get("error"))
+                try:
+                    self.cli_trade.ensure_http()
+                except Exception as e:
+                    log.warning(
+                        "WARMUP_FAIL %s %s HTTP driver not available (%s)", s, tf, e
+                    )
+                    return
+                try:
+                    rows = get_klines(s, tf, limit=n)
+                except Exception as e:
+                    log.warning("WARMUP_FAIL %s %s %s", s, tf, e)
                     continue
-                rows = r.get("data", [])
-                for row in rows:
+                for r in rows:
                     try:
                         bar = {
-                            "t": int(row[0]),
-                            "T": int(row[6]),
-                            "o": float(row[1]),
-                            "h": float(row[2]),
-                            "l": float(row[3]),
-                            "c": float(row[4]),
-                            "v": float(row[5]),
+                            "t": int(r[0]),
+                            "T": int(r[6]),
+                            "o": float(r[1]),
+                            "h": float(r[2]),
+                            "l": float(r[3]),
+                            "c": float(r[4]),
+                            "v": float(r[5]),
                             "x": True,
                         }
                     except Exception:

@@ -26,10 +26,12 @@ def env_float(key: str, default: float=0.0) -> float:
     except Exception:
         return default
 
-def env_bool(key: str, default: bool=False) -> bool:
-    v = env_str(key, None)
-    if v is None: return default
-    return v.lower() in ("1","true","on","yes","y")
+def env_bool(name: str, default: bool=False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    v = str(v).strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
 
 def env_list(key: str, sep: str=",") -> list[str]:
     v = env_str(key, "")
