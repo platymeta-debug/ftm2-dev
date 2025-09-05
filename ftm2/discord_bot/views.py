@@ -35,7 +35,7 @@ async def apply_exec_toggle(bus, active: bool, *, orchestrator=None):
 # [ANCHOR:PANEL_TOGGLE_SAFE] end
 
     try:
-        router_active = getattr(getattr(bus, "exec_router", object()), "cfg", object()).active
+        router_active = getattr(getattr(getattr(bus, "exec_router", None), "cfg", None), "active", None)
         if router_active != active and hasattr(bus, "exec_router"):
             bus.exec_router.cfg.active = bool(active)
             log.info("[EXEC_ROUTE] sync router active -> %s", active)
