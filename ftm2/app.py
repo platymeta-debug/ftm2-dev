@@ -290,7 +290,8 @@ class Orchestrator:
         modes = load_modes_cfg(self.db)
         exv = load_exec_cfg(self.db)
         # [ANCHOR:DUAL_MODE]
-        self.cli_data = BinanceClient.for_data(modes.data_mode)
+        # 시세 스트림은 항상 라이브 사용
+        self.cli_data = BinanceClient.for_data("live")
         self.cli_trade = BinanceClient.for_trade(modes.trade_mode, order_active=exv.active)
         self.streams = StreamManager(
             self.cli_data,
@@ -1159,6 +1160,31 @@ class Orchestrator:
 
     def _heartbeat(self, period_s: int = 10) -> None:
         while not self._stop.is_set():
+            # 계정/포지션 주기 갱신
+            try:
+                eqd = self.cli_trade.fetch_account_equity()
+                if eqd:
+                    self.bus.set_account({
+                        "ccy": "USDT",
+                        "totalWalletBalance": eqd.get("wallet", 0.0),
+                        "availableBalance": eqd.get("avail", 0.0),
+                        "totalUnrealizedProfit": eqd.get("upnl", 0.0),
+                        "totalMarginBalance": eqd.get("equity", 0.0),
+                        "wallet": eqd.get("wallet", 0.0),
+                        "avail": eqd.get("avail", 0.0),
+                        "upnl": eqd.get("upnl", 0.0),
+                        "equity": eqd.get("equity", 0.0),
+                    })
+                    log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", eqd.get("equity", 0.0))
+            except Exception as e:
+                log.warning("E_EQUITY_POLL_FAIL %s", e)
+            try:
+                pos = self.cli_trade.fetch_positions(self.symbols)
+                if pos:
+                    self.bus.set_positions(pos)
+            except Exception:
+                pass
+
             snap = self.bus.snapshot()
             marks = snap["marks"]
             lines = []
