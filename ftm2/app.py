@@ -1213,6 +1213,7 @@ class Orchestrator:
                         self.bus.set_monitor_state({**cur, "kpi": k})
                     except Exception:
                         pass
+
             except Exception as e:
                 log.warning("E_EQUITY_POLL_FAIL %s", e)
             try:

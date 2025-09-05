@@ -667,6 +667,7 @@ class BinanceClient:
         except Exception:
             return {}
 
+
     # 간편 equity 조회
     def equity(self) -> float:
         eq = self.fetch_account_equity()
