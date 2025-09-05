@@ -167,6 +167,7 @@ log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+
 # [ANCHOR:KEY_SELECT] begin
 def _mask(s: str | None, keep: int = 4) -> str:
     if not s:
@@ -206,6 +207,7 @@ def init_account_bus(bus) -> None:
     log.info("[ACCOUNT] scope=%s key=%s secret=%s", scope, _mask(k), _mask(s))
     # TODO: 실제 연결/폴링 start
 # [ANCHOR:KEY_SELECT] end
+
 
 # [ANCHOR:EQUITY_SOURCE] begin
 def resolve_equity(bus) -> float:
@@ -970,6 +972,7 @@ class Orchestrator:
         for s in self.symbols:
             for tf in self.kline_intervals:
                 try:
+
                     self.cli_trade.ensure_http()
                 except Exception as e:
                     log.warning(
@@ -977,6 +980,7 @@ class Orchestrator:
                     )
                     return
                 try:
+
                     rows = get_klines(s, tf, limit=n)
                 except Exception as e:
                     log.warning("WARMUP_FAIL %s %s %s", s, tf, e)

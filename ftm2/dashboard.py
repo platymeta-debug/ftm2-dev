@@ -150,25 +150,29 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
     if kpi:  # KPI 포함
         up_min = int((kpi.get("uptime_s") or 0) / 60)
         reg = kpi.get("regimes") or {}
+
         fc = kpi.get("forecast") or {}
         eq = kpi.get("exec_quality") or {}
         ol = kpi.get("order_ledger") or {}
         bar = "─" * 33
         fr = ol.get("fill_rate")
+
         lines += [
             "📊 **FTM2 KPI 대시보드**",
             f"{bar}",
             f"⏱️ 가동시간: **{up_min}분**",
+
             f"💰 자본(Equity): **{_fmt(kpi.get('equity'))}**  레버리지: **{_fmt(kpi.get('lever'))}x**",
             f"📉 당일손익: **{_fmt(kpi.get('day_pnl_pct'))}%**  " + ("🛑 데일리컷" if kpi.get("day_cut") else "✅ 정상"),
             "",
             f"📐 익스포저: 롱 {_fmt(kpi.get('used_long'), '0') }% / 숏 {_fmt(kpi.get('used_short'), '0') }%",
-            f"🧭 레짐: ↑{reg.get('TREND_UP',0)} ↓{reg.get('TREND_DOWN',0)} 高{reg.get('RANGE_HIGH',0)} 低{reg.get('RANGE_LOW',0)}",
+            f"🧭 레짐: ↑{reg.get('TREND_UP',0)} ↓{reg.get('TREND_DOWN',0)} 고{reg.get('RANGE_HIGH',0)} 저{reg.get('RANGE_LOW',0)}",
             f"🎯 예측: N={fc.get('n',0)} 강신호={fc.get('strong',0)} 평균스코어={_fmt(fc.get('avg_score'))}",
             "",
             f"⚙️ 실행 품질(최근): 샘플={eq.get('samples',0)}  bps(avg={_fmt(eq.get('avg_bps'))}, p90={_fmt(eq.get('p90_bps'))})  "
             f"넛지={eq.get('nudges',0)}  취소={eq.get('cancels',0)}",
             f"🧾 주문원장(최근): 주문={ol.get('orders',0)}  체결률={_fmt(fr*100 if fr is not None else None)}%  TTF(p50)={_fmt(ol.get('p50_ttf_ms'))}ms",
+
             f"📮 미체결 주문: {kpi.get('open_orders',0)} 건",
             f"{bar}",
             "",

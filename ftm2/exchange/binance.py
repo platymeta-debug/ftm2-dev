@@ -42,6 +42,8 @@ def get_klines(symbol: str, interval: str, limit: int = 600):
     url = "https://fapi.binance.com/fapi/v1/klines"
     return _http_drv.get(url, params={"symbol": symbol, "interval": interval, "limit": limit})
 
+
+
 # WS driver
 try:
     from websocket import WebSocketApp  # websocket-client
