@@ -42,19 +42,7 @@ def get_klines(symbol: str, interval: str, limit: int = 600):
     url = "https://fapi.binance.com/fapi/v1/klines"
     return _http_drv.get(url, params={"symbol": symbol, "interval": interval, "limit": limit})
 
-# -----------------------------------------------------------------------------
-# HTTP drivers (httpx -> requests)
-# -----------------------------------------------------------------------------
-try:
-    import httpx as _http
-    _HTTP_HAVE = "httpx"
-except Exception:  # pragma: no cover
-    try:
-        import requests as _http  # type: ignore
-        _HTTP_HAVE = "requests"
-    except Exception:
-        _http = None
-        _HTTP_HAVE = ""
+
 
 # WS driver
 try:
@@ -222,9 +210,16 @@ class BinanceClient:
         self.order_active = order_active
         self.http_timeout = http_timeout
 
+        self.http: str | None = None
+        self._bind_http_driver()
+
         log.info(
             "[BINANCE_CLIENT_STATUS] mode=%s rest=%s ws=%s http=%s ws_driver=%s",
-            self.mode, self.rest_base, self.ws_base, _HTTP_HAVE or "none", _WS_HAVE or "none"
+            self.mode,
+            self.rest_base,
+            self.ws_base,
+            self.http or "none",
+            _WS_HAVE or "none",
         )
 
     # ------------------------------------------------------------------
@@ -282,11 +277,36 @@ class BinanceClient:
         return cls(mode=("live" if mode == "live" else "testnet"), order_active=order_active)
 
     # ------------------------------------------------------------------
+    # HTTP driver binding
+    # ------------------------------------------------------------------
+    def _bind_http_driver(self) -> None:
+        if self.http:
+            return
+        try:
+            import httpx  # noqa: F401
+            self.http = "httpx"
+        except Exception:  # pragma: no cover
+            try:
+                import requests  # noqa: F401
+                self.http = "requests"
+            except Exception:
+                self.http = None
+        logging.getLogger("binance.client").info(
+            "[HTTP DRIVER] selected=%s", self.http or "none"
+        )
+
+    def ensure_http(self) -> None:
+        if not self.http:
+            self._bind_http_driver()
+        if not self.http:
+            raise RuntimeError("HTTP driver not available")
+
+    # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
     def _http_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
                       signed: bool = False, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        if _http is None:
+        if self.http not in ("httpx", "requests"):
             return _err("E_CONN_FAIL", "HTTP driver not available (install httpx or requests)")
 
         base = self.rest_base.rstrip("/")
@@ -316,8 +336,9 @@ class BinanceClient:
                 hdrs["X-MBX-APIKEY"] = self.key
 
         try:
-            if _HTTP_HAVE == "httpx":
-                with _http.Client(timeout=self.http_timeout) as client:
+            if self.http == "httpx":
+                import httpx
+                with httpx.Client(timeout=self.http_timeout) as client:
                     if method == "GET":
                         r = client.get(url, params=params, headers=hdrs)
                     elif method == "POST":
@@ -331,14 +352,15 @@ class BinanceClient:
                     status = r.status_code
                     text = r.text
             else:
+                import requests
                 if method == "GET":
-                    r = _http.get(url, params=params, headers=hdrs, timeout=self.http_timeout)
+                    r = requests.get(url, params=params, headers=hdrs, timeout=self.http_timeout)
                 elif method == "POST":
-                    r = _http.post(url, params=params, headers=hdrs, timeout=self.http_timeout)
+                    r = requests.post(url, params=params, headers=hdrs, timeout=self.http_timeout)
                 elif method == "PUT":
-                    r = _http.put(url, params=params, headers=hdrs, timeout=self.http_timeout)
+                    r = requests.put(url, params=params, headers=hdrs, timeout=self.http_timeout)
                 elif method == "DELETE":
-                    r = _http.delete(url, params=params, headers=hdrs, timeout=self.http_timeout)
+                    r = requests.delete(url, params=params, headers=hdrs, timeout=self.http_timeout)
                 else:
                     return _err("E_HTTP_METHOD", f"Unsupported method {method}", path=path)
                 status = r.status_code

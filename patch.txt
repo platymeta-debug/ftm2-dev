@@ -103,4 +103,10 @@
 - fix(panel): 라우터 내부속성 접근 제거(토글 예외 방지)
 - chore(req): httpx/requests 명시 추가
 
+2025-09-05 v0.3.9
+- feat(app): 강제 .env 로드 및 부팅 요약 로그
+- feat(connector): HTTP 드라이버 실행 시점 바인딩(ensure_http)
+- feat(orch): TRADE_MODE별 API 키 선택 및 계정 초기화 로그
+
+
 

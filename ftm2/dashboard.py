@@ -166,7 +166,7 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
             f"📉 당일손익: **{_fmt(kpi.get('day_pnl_pct'))}%**  " + ("🛑 데일리컷" if kpi.get("day_cut") else "✅ 정상"),
             "",
             f"📐 익스포저: 롱 {_fmt(kpi.get('used_long'), '0') }% / 숏 {_fmt(kpi.get('used_short'), '0') }%",
-            f"🧭 레짐: ↑{reg.get('TREND_UP',0)} ↓{reg.get('TREND_DOWN',0)} 高{reg.get('RANGE_HIGH',0)} 低{reg.get('RANGE_LOW',0)}",
+            f"🧭 레짐: ↑{reg.get('TREND_UP',0)} ↓{reg.get('TREND_DOWN',0)} 고{reg.get('RANGE_HIGH',0)} 저{reg.get('RANGE_LOW',0)}",
             f"🎯 예측: N={fc.get('n',0)} 강신호={fc.get('strong',0)} 평균스코어={_fmt(fc.get('avg_score'))}",
             "",
             f"⚙️ 실행 품질(최근): 샘플={eq.get('samples',0)}  bps(avg={_fmt(eq.get('avg_bps'))}, p90={_fmt(eq.get('p90_bps'))})  "

@@ -167,6 +167,48 @@ log = logging.getLogger("ftm2.orch")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+
+# [ANCHOR:KEY_SELECT] begin
+def _mask(s: str | None, keep: int = 4) -> str:
+    if not s:
+        return ""
+    s = str(s)
+    return s[:keep] + "*" * max(0, len(s) - keep - 2) + s[-2:]
+
+
+def _pick_keys(trade_mode: str):
+    if (trade_mode or "").lower() == "live":
+        k = os.getenv("BINANCE_API_KEY")
+        s = os.getenv("BINANCE_API_SECRET")
+        scope = "live"
+    else:
+        k = os.getenv("BINANCE_TESTNET_API_KEY")
+        s = os.getenv("BINANCE_TESTNET_API_SECRET")
+        scope = "testnet"
+    return scope, k, s
+
+
+def init_account_bus(bus) -> None:
+    import logging
+
+    log = logging.getLogger("ftm2.orch")
+    tm = os.getenv("TRADE_MODE", "testnet")
+    scope, k, s = _pick_keys(tm)
+
+    use_user = env_bool("USE_USER", False)
+    if not use_user:
+        log.info("[ACCOUNT] user stream disabled (USE_USER=0)")
+        return
+
+    if not k or not s:
+        log.warning("E_BAL_POLL_FAIL scope=%s reason=NO_API_KEY", scope)
+        return
+
+    log.info("[ACCOUNT] scope=%s key=%s secret=%s", scope, _mask(k), _mask(s))
+    # TODO: 실제 연결/폴링 start
+# [ANCHOR:KEY_SELECT] end
+
+
 # [ANCHOR:EQUITY_SOURCE] begin
 def resolve_equity(bus) -> float:
     """계정 폴링 값이 있으면 최우선, 그다음 OVERRIDE, 없으면 기본 1000."""
@@ -199,6 +241,7 @@ class Orchestrator:
         self.eval_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.regime_interval = self.kline_intervals[0] if self.kline_intervals else "5m"
         self.bus = StateBus()
+        init_account_bus(self.bus)
         self.db_path = os.getenv("DB_PATH") or "./runtime/trader.db"
         self.db = Persistence(self.db_path)
         self.db.ensure_schema()
@@ -929,6 +972,15 @@ class Orchestrator:
         for s in self.symbols:
             for tf in self.kline_intervals:
                 try:
+
+                    self.cli_trade.ensure_http()
+                except Exception as e:
+                    log.warning(
+                        "WARMUP_FAIL %s %s HTTP driver not available (%s)", s, tf, e
+                    )
+                    return
+                try:
+
                     rows = get_klines(s, tf, limit=n)
                 except Exception as e:
                     log.warning("WARMUP_FAIL %s %s %s", s, tf, e)
