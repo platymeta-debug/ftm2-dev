@@ -235,7 +235,7 @@ class BinanceClient:
           REST_BASE_OVERRIDE   : 선택 오버라이드
           WS_BASE_OVERRIDE     : 선택 오버라이드
         """
-        mode = (os.getenv("MODE") or "testnet").lower()
+        mode = (mode or os.getenv("TRADE_MODE") or os.getenv("MODE") or "testnet").lower()
         if mode == "live":
             key = os.getenv("BINANCE_LIVE_API_KEY") or ""
             secret = os.getenv("BINANCE_LIVE_API_SECRET") or ""
