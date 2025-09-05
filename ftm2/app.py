@@ -214,25 +214,27 @@ def init_account_bus(bus) -> None:
         except Exception:
             pass
 
-        eq = cli.fetch_account_equity()
-        if eq:
+
+        snap = cli.account_snapshot()
+        if snap:
             bus.set_account({
                 "ccy": "USDT",
-                "totalWalletBalance": eq.get("wallet", 0.0),
-                "availableBalance": eq.get("avail", 0.0),
-                "totalUnrealizedProfit": eq.get("upnl", 0.0),
-                "totalMarginBalance": eq.get("equity", 0.0),
-                "wallet": eq.get("wallet", 0.0),
-                "avail": eq.get("avail", 0.0),
-                "upnl": eq.get("upnl", 0.0),
-                "equity": eq.get("equity", 0.0),
+                "totalWalletBalance": snap.get("wallet", 0.0),
+                "availableBalance": snap.get("avail", 0.0),
+                "totalUnrealizedProfit": snap.get("upnl", 0.0),
+                "totalMarginBalance": snap.get("equity", 0.0),
+                "wallet": snap.get("wallet", 0.0),
+                "avail": snap.get("avail", 0.0),
+                "upnl": snap.get("upnl", 0.0),
+                "equity": snap.get("equity", 0.0),
             })
             log.info(
                 "[ACCOUNT_INIT] wallet=%.2f equity=%.2f upnl=%.2f avail=%.2f",
-                eq.get("wallet", 0.0),
-                eq.get("equity", 0.0),
-                eq.get("upnl", 0.0),
-                eq.get("avail", 0.0),
+                snap.get("wallet", 0.0),
+                snap.get("equity", 0.0),
+                snap.get("upnl", 0.0),
+                snap.get("avail", 0.0),
+
             )
 
         syms = env_list("SYMBOLS") or []
@@ -1065,20 +1067,21 @@ class Orchestrator:
 
         # KPI 초기화 전에 계좌/포지션을 한 번 갱신해 초기 값이 남지 않도록
         try:
-            eqd = self.cli_trade.fetch_account_equity()
-            if eqd:
+            snap = self.cli_trade.account_snapshot()
+            if snap:
                 self.bus.set_account({
                     "ccy": "USDT",
-                    "totalWalletBalance": eqd.get("wallet", 0.0),
-                    "availableBalance": eqd.get("avail", 0.0),
-                    "totalUnrealizedProfit": eqd.get("upnl", 0.0),
-                    "totalMarginBalance": eqd.get("equity", 0.0),
-                    "wallet": eqd.get("wallet", 0.0),
-                    "avail": eqd.get("avail", 0.0),
-                    "upnl": eqd.get("upnl", 0.0),
-                    "equity": eqd.get("equity", 0.0),
+                    "totalWalletBalance": snap.get("wallet", 0.0),
+                    "availableBalance": snap.get("avail", 0.0),
+                    "totalUnrealizedProfit": snap.get("upnl", 0.0),
+                    "totalMarginBalance": snap.get("equity", 0.0),
+                    "wallet": snap.get("wallet", 0.0),
+                    "avail": snap.get("avail", 0.0),
+                    "upnl": snap.get("upnl", 0.0),
+                    "equity": snap.get("equity", 0.0),
                 })
-                log.info("[EQUITY] bootstrap: totalMarginBalance=%.2f", eqd.get("equity", 0.0))
+                log.info("[EQUITY] bootstrap: totalMarginBalance=%.2f", snap.get("equity", 0.0))
+
                 try:
                     k = self.kpi.compute(self.bus.snapshot())
                     cur = self.bus.snapshot().get("monitor") or {}
@@ -1193,20 +1196,21 @@ class Orchestrator:
         while not self._stop.is_set():
             # 계정/포지션 주기 갱신
             try:
-                eqd = self.cli_trade.fetch_account_equity()
-                if eqd:
+                snap = self.cli_trade.account_snapshot()
+                if snap:
                     self.bus.set_account({
                         "ccy": "USDT",
-                        "totalWalletBalance": eqd.get("wallet", 0.0),
-                        "availableBalance": eqd.get("avail", 0.0),
-                        "totalUnrealizedProfit": eqd.get("upnl", 0.0),
-                        "totalMarginBalance": eqd.get("equity", 0.0),
-                        "wallet": eqd.get("wallet", 0.0),
-                        "avail": eqd.get("avail", 0.0),
-                        "upnl": eqd.get("upnl", 0.0),
-                        "equity": eqd.get("equity", 0.0),
+                        "totalWalletBalance": snap.get("wallet", 0.0),
+                        "availableBalance": snap.get("avail", 0.0),
+                        "totalUnrealizedProfit": snap.get("upnl", 0.0),
+                        "totalMarginBalance": snap.get("equity", 0.0),
+                        "wallet": snap.get("wallet", 0.0),
+                        "avail": snap.get("avail", 0.0),
+                        "upnl": snap.get("upnl", 0.0),
+                        "equity": snap.get("equity", 0.0),
                     })
-                    log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", eqd.get("equity", 0.0))
+                    log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", snap.get("equity", 0.0))
+
                     try:
                         k = self.kpi.compute(self.bus.snapshot())
                         cur = self.bus.snapshot().get("monitor") or {}

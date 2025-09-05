@@ -644,35 +644,40 @@ class BinanceClient:
         except Exception:
             return None
 
-    # --- 신규: 통합 잔고/에쿼티 조회 -----------------------------------
-    def fetch_account_equity(self) -> Dict[str, float]:
-        """/fapi/v2/account 기반의 잔고 정보를 반환한다."""
+
+    # --- 계정 스냅샷 ---------------------------------------------------
+    def account_snapshot(self) -> Dict[str, Any]:
+        """/fapi/v2/account에서 잔고/포지션을 한 번에 가져온다."""
+
         r = self._http_request("GET", "/v2/account", signed=True)
         if not r.get("ok"):
             return {}
         d = r.get("data") or {}
         try:
+            equity = float(d.get("totalMarginBalance") or 0.0)
             wallet = float(d.get("totalWalletBalance") or 0.0)
             upnl = float(d.get("totalUnrealizedProfit") or 0.0)
-            equity = float(d.get("totalMarginBalance") or (wallet + upnl))
-            avail = 0.0
-            for a in d.get("assets", []):
-                if (a.get("asset") or "").upper() == "USDT":
-                    try:
-                        avail = float(a.get("availableBalance") or 0.0)
-                    except Exception:
-                        avail = 0.0
-                    break
-            return {"wallet": wallet, "equity": equity, "upnl": upnl, "avail": avail}
+            avail = float(d.get("availableBalance") or 0.0)
         except Exception:
-            return {}
+            equity = wallet = upnl = avail = 0.0
+        positions = d.get("positions") or []
+        return {"equity": equity, "wallet": wallet, "upnl": upnl, "avail": avail, "positions": positions}
 
+    # --- 통합 잔고/에쿼티 조회 ---------------------------------------
+    def fetch_account_equity(self) -> Dict[str, float]:
+        snap = self.account_snapshot()
+        return {
+            "wallet": float(snap.get("wallet", 0.0)),
+            "equity": float(snap.get("equity", 0.0)),
+            "upnl": float(snap.get("upnl", 0.0)),
+            "avail": float(snap.get("avail", 0.0)),
+        }
 
     # 간편 equity 조회
     def equity(self) -> float:
-        eq = self.fetch_account_equity()
         try:
-            return float(eq.get("equity", 0.0))
+            return float(self.account_snapshot().get("equity", 0.0))
+
         except Exception:
             return 0.0
 
@@ -712,6 +717,18 @@ class BinanceClient:
                 "marginType": p.get("marginType"),
             }
         return out
+
+
+    # --- 포지션 리스크 조회 -------------------------------------------
+    def positions_risk(self, symbols: List[str] | None = None) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {}
+        if symbols:
+            params["symbols"] = json.dumps(symbols)
+        r = self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
+        if not r.get("ok"):
+            return []
+        return r.get("data") or []
+
 
     def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
