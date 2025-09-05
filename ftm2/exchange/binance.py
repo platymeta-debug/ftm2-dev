@@ -22,6 +22,7 @@ import hashlib
 import threading
 import logging
 import concurrent.futures
+from urllib.parse import urlencode
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any, List
 
@@ -440,6 +441,16 @@ class BinanceClient:
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
+    def _encode_and_sign(self, params: Dict[str, Any]) -> str:
+        """URL-encode params and append HMAC-SHA256 signature."""
+        params = dict(params)
+        params.setdefault("recvWindow", self.recv_window_ms)
+        if "timestamp" not in params:
+            params["timestamp"] = self._now_ms()
+        encoded = urlencode(params, doseq=True)
+        sig = hmac.new(self.secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+        return f"{encoded}&signature={sig}"
+
     def _http_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
                       signed: bool = False, headers: Optional[Dict[str, str]] = None,
                       _retried: bool = False) -> Dict[str, Any]:
@@ -458,15 +469,12 @@ class BinanceClient:
         # 서명
         hdrs = dict(headers or {})
         orig_hdrs = dict(hdrs)
+        payload: Optional[str] = None
         if signed:
             if not self.key or not self.secret:
                 return _err("E_KEY_EMPTY", "API key/secret required", path=path)
             hdrs["X-MBX-APIKEY"] = self.key
-            params.setdefault("recvWindow", self.recv_window_ms)
-            params["timestamp"] = self._now_ms()
-            query = "&".join(f"{k}={params[k]}" for k in sorted(params))
-            sig = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-            params["signature"] = sig
+            payload = self._encode_and_sign(params)
         else:
             # 일부 엔드포인트(유저스트림)는 KEY 헤더만 요구
             if "listenKey" in path or path.endswith("/listenKey"):
@@ -478,30 +486,26 @@ class BinanceClient:
             if self.http == "httpx":
                 import httpx
                 with httpx.Client(timeout=self.http_timeout) as client:
-                    if method == "GET":
-                        r = client.get(url, params=params, headers=hdrs)
-                    elif method == "POST":
-                        r = client.post(url, params=params, headers=hdrs)
-                    elif method == "PUT":
-                        r = client.put(url, params=params, headers=hdrs)
-                    elif method == "DELETE":
-                        r = client.delete(url, params=params, headers=hdrs)
+                    if signed:
+                        if method in ("GET", "DELETE"):
+                            r = client.request(method, f"{url}?{payload}", headers=hdrs)
+                        else:  # POST, PUT
+                            hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+                            r = client.request(method, url, content=payload, headers=hdrs)
                     else:
-                        return _err("E_HTTP_METHOD", f"Unsupported method {method}", path=path)
+                        r = client.request(method, url, params=params, headers=hdrs)
                     status = r.status_code
                     text = r.text
             else:
                 import requests
-                if method == "GET":
-                    r = requests.get(url, params=params, headers=hdrs, timeout=self.http_timeout)
-                elif method == "POST":
-                    r = requests.post(url, params=params, headers=hdrs, timeout=self.http_timeout)
-                elif method == "PUT":
-                    r = requests.put(url, params=params, headers=hdrs, timeout=self.http_timeout)
-                elif method == "DELETE":
-                    r = requests.delete(url, params=params, headers=hdrs, timeout=self.http_timeout)
+                if signed:
+                    if method in ("GET", "DELETE"):
+                        r = requests.request(method, f"{url}?{payload}", headers=hdrs, timeout=self.http_timeout)
+                    else:
+                        hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+                        r = requests.request(method, url, data=payload, headers=hdrs, timeout=self.http_timeout)
                 else:
-                    return _err("E_HTTP_METHOD", f"Unsupported method {method}", path=path)
+                    r = requests.request(method, url, params=params, headers=hdrs, timeout=self.http_timeout)
                 status = r.status_code
                 text = r.text
 
@@ -720,7 +724,13 @@ class BinanceClient:
         path = "/v1/order/test" if validate_only else "/v1/order"
         if not self.order_active and not validate_only:
             return _err("E_ORDER_STUB", "order endpoint is stubbed (disabled)", payload=payload)
-        r = self._http_request("POST", path, params=payload, signed=True)
+        data = dict(payload)
+        if (data.get("type") or "").upper() == "MARKET":
+            data.pop("timeInForce", None)
+            data.pop("price", None)
+        if "reduceOnly" in data:
+            data["reduceOnly"] = "true" if data["reduceOnly"] else "false"
+        r = self._http_request("POST", path, params=data, signed=True)
         if not r.get("ok"):
             err = r.get("error") or {}
             ctx = err.get("ctx") or {}

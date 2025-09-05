@@ -1063,6 +1063,37 @@ class Orchestrator:
         else:
             self.streams.start()
 
+        # KPI 초기화 전에 계좌/포지션을 한 번 갱신해 초기 값이 남지 않도록
+        try:
+            eqd = self.cli_trade.fetch_account_equity()
+            if eqd:
+                self.bus.set_account({
+                    "ccy": "USDT",
+                    "totalWalletBalance": eqd.get("wallet", 0.0),
+                    "availableBalance": eqd.get("avail", 0.0),
+                    "totalUnrealizedProfit": eqd.get("upnl", 0.0),
+                    "totalMarginBalance": eqd.get("equity", 0.0),
+                    "wallet": eqd.get("wallet", 0.0),
+                    "avail": eqd.get("avail", 0.0),
+                    "upnl": eqd.get("upnl", 0.0),
+                    "equity": eqd.get("equity", 0.0),
+                })
+                log.info("[EQUITY] bootstrap: totalMarginBalance=%.2f", eqd.get("equity", 0.0))
+                try:
+                    k = self.kpi.compute(self.bus.snapshot())
+                    cur = self.bus.snapshot().get("monitor") or {}
+                    self.bus.set_monitor_state({**cur, "kpi": k})
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("E_EQUITY_BOOTSTRAP %s", e)
+        try:
+            pos = self.cli_trade.fetch_positions(self.symbols)
+            if pos:
+                self.bus.set_positions(pos)
+        except Exception:
+            pass
+
         # 피처 루프 시작
         t = threading.Thread(target=self._features_loop, name="features", daemon=True)
         t.start()
@@ -1176,6 +1207,13 @@ class Orchestrator:
                         "equity": eqd.get("equity", 0.0),
                     })
                     log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", eqd.get("equity", 0.0))
+                    try:
+                        k = self.kpi.compute(self.bus.snapshot())
+                        cur = self.bus.snapshot().get("monitor") or {}
+                        self.bus.set_monitor_state({**cur, "kpi": k})
+                    except Exception:
+                        pass
+
             except Exception as e:
                 log.warning("E_EQUITY_POLL_FAIL %s", e)
             try:
