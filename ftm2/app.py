@@ -480,6 +480,7 @@ class Orchestrator:
         from ftm2.utils.env import env_str, env_bool
         mode = env_str("STRAT_MODE", "ensemble")
         dummy_enabled = env_bool("DUMMY_INTENT", False)
+
         intent = None
         if mode == "ensemble":
             rows = self.forecast.process_snapshot(bus.snapshot())
@@ -864,10 +865,12 @@ class Orchestrator:
 
     # [ANCHOR:ORCH_EXEC_TOGGLE]
     async def on_exec_toggle(self, active: bool) -> None:
+        # 실행 라우터 on/off
         self.exec_router.cfg.active = bool(active)
         if getattr(self, "cli_trade", None):
             self.cli_trade.order_active = bool(active)
         log.info("[EXEC] toggle active=%s source=PANEL", active)
+
 
     def _reconcile_loop(self, period_s: float = 0.5) -> None:
         while not self._stop.is_set():
@@ -1067,6 +1070,24 @@ class Orchestrator:
         backoff = period
         while not self._stop.is_set():
             try:
+
+                pos = self.cli_trade.fetch_positions(self.symbols)
+                if pos:
+                    self.bus.set_positions(pos)
+            except Exception as e:
+                log.warning("E_POS_POLL_FAIL %r backoff=%s", e, backoff)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, period * 5)
+                continue
+            backoff = period
+            time.sleep(period)
+
+
+    def _positions_loop(self, period_s: int | None = None) -> None:
+        period = period_s or env_int("POSITIONS_POLL_SEC", 10)
+        backoff = period
+        while not self._stop.is_set():
+            try:
                 pos = self.cli_trade.fetch_positions(self.symbols)
                 if pos:
                     self.bus.set_positions(pos)
@@ -1239,6 +1260,7 @@ class Orchestrator:
             self._threads.append(tp)
             self._pos_thread_started = True
 
+
         # 설정 핫리로드
         t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
         t.start()
@@ -1260,6 +1282,7 @@ class Orchestrator:
                 t.start()
                 self._threads.append(t)
                 _HEARTBEAT_STARTED = True
+
 
 
         # Discord 봇 (토큰 없으면 내부에서 자동 비활성 로그 후 종료)

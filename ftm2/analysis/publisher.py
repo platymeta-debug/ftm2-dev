@@ -87,6 +87,7 @@ class AnalysisPublisher:
         dm = (os.getenv("DATA_MODE") or "live").lower()
         tm = (os.getenv("TRADE_MODE") or "testnet").lower()
         lines.append(f"※ 데이터: {dm}, 트레이딩: {tm}")
+
         return "\n".join(lines)
     # [ANCHOR:ANALYSIS_PUBLISHER] end
 

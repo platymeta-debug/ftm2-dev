@@ -118,6 +118,7 @@
 2025-09-08 v0.6.2
 - feat(connector): Futures ACCOUNT 기반 Equity/Available 산출 (/fapi/v2/account)
 - feat(orch): 의도 더미(DUMMY_INTENT) 기본 OFF, 패널 ON 시 실주문 라우팅 고정
+
 - feat(analysis): 한글 리포트 — EMA/RV20/ATR/RET1/레짐·기여도 출력
 - feat(kpi): 대시보드 ‘사용가능’ 잔고 추가, 포지션 상세 표기 개선
 - feat(loops): Equity/Positions 폴링 중복 방지 가드

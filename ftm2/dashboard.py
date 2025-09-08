@@ -168,6 +168,7 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
         equity_val = float((kpi and kpi.get("equity")) or acct.get("totalMarginBalance") or acct.get("equity") or 0.0)
         available_val = float(acct.get("availableBalance") or acct.get("avail") or 0.0)
 
+
         lines += [
             "📊 **FTM2 KPI 대시보드**",
             f"{bar}",
