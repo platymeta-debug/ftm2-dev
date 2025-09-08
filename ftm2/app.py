@@ -456,6 +456,7 @@ class Orchestrator:
 
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
+        self._started = False
 
         # 부팅 요약
         log.info("[BOOT_ENV_SUMMARY] MODE=%s, SYMBOLS=%s, TF_EXEC=%s, TF_SIGNAL=%s", self.mode, self.symbols, self.tf_exec, self.kline_intervals)
@@ -1138,6 +1139,10 @@ class Orchestrator:
 
 
     def start(self) -> None:
+        if self._started:
+            log.info("[APP] start() skipped (already started)")
+            return
+        self._started = True
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
         #     t = threading.Thread(target=self._price_poller, args=(sym,), name=f"poll:{sym}", daemon=True)
@@ -1320,6 +1325,14 @@ class Orchestrator:
                         "upnl": snap.get("upnl", 0.0),
                         "equity": snap.get("equity", 0.0),
                     })
+                    try:
+                        if not hasattr(self.bus, "state"):
+                            class _S:  # pragma: no cover - simple holder
+                                pass
+                            self.bus.state = _S()
+                        self.bus.state.equity_usdt = float(snap.get("equity") or 0.0)
+                    except Exception:
+                        pass
                     log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", snap.get("equity", 0.0))
 
                     try:
