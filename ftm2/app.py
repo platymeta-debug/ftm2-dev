@@ -837,7 +837,14 @@ class Orchestrator:
 
     # [ANCHOR:STRAT_ROUTE] begin
     async def on_exec_toggle(self, active: bool) -> None:
+        # 실행 라우터 on/off
         self.exec_router.cfg.active = bool(active)
+        # 중요: BinanceClient의 order_active도 동기화해야 실제 주문이 전송됨
+        try:
+            if hasattr(self, "cli_trade") and self.cli_trade is not None:
+                self.cli_trade.order_active = bool(active)
+        except Exception:
+            pass
     # [ANCHOR:STRAT_ROUTE] end
 
     def _reconcile_loop(self, period_s: float = 0.5) -> None:
@@ -1004,8 +1011,24 @@ class Orchestrator:
                 time.sleep(backoff)
                 backoff = min(backoff * 2, period * 5)
                 continue
-            time.sleep(period)
+        time.sleep(period)
     # [ANCHOR:ORCH_EQUITY_LOOP] end
+
+    def _positions_loop(self, period_s: int | None = None) -> None:
+        period = period_s or env_int("POSITIONS_POLL_SEC", 10)
+        backoff = period
+        while not self._stop.is_set():
+            try:
+                pos = self.cli_trade.fetch_positions(self.symbols)
+                if pos:
+                    self.bus.set_positions(pos)
+            except Exception as e:
+                log.warning("E_POS_POLL_FAIL %r backoff=%s", e, backoff)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, period * 5)
+                continue
+            backoff = period
+            time.sleep(period)
 
 
     def _warmup(self, n: int = 800) -> None:
@@ -1154,6 +1177,11 @@ class Orchestrator:
 
         # Equity 폴링 루프 시작
         t = threading.Thread(target=self._equity_loop, name="equity-poll", daemon=True)
+        t.start()
+        self._threads.append(t)
+
+        # Positions 폴링 루프 시작
+        t = threading.Thread(target=self._positions_loop, name="pos-poll", daemon=True)
         t.start()
         self._threads.append(t)
 

@@ -50,27 +50,51 @@ class AnalysisPublisher:
 
     # [ANCHOR:ANALYSIS_PUBLISHER] begin
     def _render(self, snap: dict) -> str:
+        import math, os, time
         marks: dict = snap.get("marks", {}) or {}
-        syms = getattr(self.bot.bus, "symbols", None) or snap.get("symbols") or sorted(marks.keys())
-        regimes = snap.get("regimes", {}) or {}
-        intents = snap.get("intents", {}) or snap.get("forecast", {}) or snap.get("signals", {}) or {}
-        t = time.strftime("%H:%M:%S", time.gmtime(int(snap.get("now_ts", 0)) / 1000))
+        feats: dict = snap.get("features", {}) or {}
+        regimes: dict = snap.get("regimes", {}) or {}
+        fcs: dict = snap.get("forecasts", {}) or {}
+        syms = snap.get("symbols") or sorted(marks.keys()) or ["BTCUSDT","ETHUSDT"]
+        t = time.strftime("%H:%M:%S", time.gmtime(int(snap.get("now_ts", 0))/1000))
         lines = [f"🧠 실시간 분석 리포트 ({t} UTC)"]
-        arrow = {"LONG": "⬆", "SHORT": "⬇", "FLAT": "→"}
-        tfs = ("5m", "15m", "1h", "4h")
+
+        tfs = ("5m","15m","1h","4h")
+        arrow = {"LONG":"⬆","SHORT":"⬇","FLAT":"→"}
+
+        def _feat_snip(s, tf):
+            d = feats.get((s, tf)) or {}
+            emaf = float(d.get("ema_fast",0.0)); emas = float(d.get("ema_slow",1e-12)) or 1e-12
+            ema_spread = (emaf - emas) / (emas if emas != 0.0 else 1e-12)
+            rv_pr = float(d.get("rv_pr", 0.0))
+            atr = float(d.get("atr14", 0.0))
+            return f"ema={ema_spread:+.5f}  rv%={rv_pr:.3f}  atr={atr:.2f}"
+
+        def _comp_snip(fc):
+            ex = (fc or {}).get("explain") or {}
+            return ("모멘텀:{:+.2f}  평균회귀:{:+.2f}  돌파:{:+.2f}"
+                    .format(float(ex.get('mom',0.0)), float(ex.get('meanrev',0.0)), float(ex.get('breakout',0.0))))
+
         for s in syms:
-            intent = intents.get(s, {})
-            score = float(intent.get("score", 0.0)) if isinstance(intent, dict) else 0.0
-            direction = intent.get("dir") or intent.get("stance") or intent.get("side") or "FLAT"
-            em = arrow.get(str(direction).upper(), "→")
-            dots = []
+            parts = []
             for tf in tfs:
-                dot = "●" if regimes.get((s, tf)) or intent.get(tf) else "·"
-                dots.append(f"{tf}:{dot}")
-            lines.append(
-                f"• {s} — {' | '.join(dots)} | 점수:{score:+.1f} / 방향:{em}"
-            )
-        lines.append("※ 데이터: live, 트레이딩: testnet")
+                fc = fcs.get((s, tf)) or {}
+                rcode = (regimes.get((s, tf)) or {}).get("code","")
+                sc = float(fc.get("score",0.0))
+                pup = float(fc.get("prob_up") or fc.get("p_up") or 0.5)
+                stance = (fc.get("stance") or "FLAT").upper()
+                em = arrow.get(stance,"→")
+                parts.append(f"{tf}: {sc:+.2f}({em}, r={rcode}, p_up={pup:.2f})")
+            lines.append(f"• {s} — " + " | ".join(parts))
+            # 가장 짧은 TF 기준으로 특성/기여 표기
+            fc0 = fcs.get((s, tfs[0])) or {}
+            lines.append("  - 특성: " + _feat_snip(s, tfs[0]))
+            lines.append("  - 기여도: " + _comp_snip(fc0))
+
+        # 모드 푸터 동적 반영
+        dm = (os.getenv("DATA_MODE") or "live").lower()
+        tm = (os.getenv("TRADE_MODE") or "auto").lower()
+        lines.append(f"※ 데이터: {dm}, 트레이딩: {tm}")
         return "\n".join(lines)
     # [ANCHOR:ANALYSIS_PUBLISHER] end
 

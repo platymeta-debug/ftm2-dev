@@ -185,6 +185,20 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
             f"{bar}",
             "",
         ]
+    # 포지션 상세(있을 때만)
+    pos = snapshot.get("positions") or {}
+    if pos:
+        lines.append("📦 포지션 상세")
+        for s, p in pos.items():
+            qty = float(p.get("pa") or 0.0)
+            side = "LONG" if qty > 0 else "SHORT"
+            ep = float(p.get("ep") or 0.0)
+            lev = float(p.get("leverage") or 0.0)
+            mp = float((snapshot.get("marks") or {}).get(s, {}).get("price") or 0.0)
+            up = float(p.get("up") or (qty*(mp-ep)))
+            lines.append(f"  • {s:<7} {side:<5} {abs(qty):.6f} @ {ep:,.2f}  | mark {mp:,.2f}  UPNL {up:+.2f}  lev {lev:.0f}x")
+        lines.append("")
+
     # 마크프라이스 요약(기존 로직 유지)
     marks = snapshot.get("marks") or {}
     if marks:
