@@ -145,3 +145,8 @@
 - fix(orch): on_bar_close에서 미존재 API(exec_router.route) 호출 제거 → 리스크 루프 일원화
 - fix(kpi): ZoneInfo 미탐색 시 UTC 폴백(DAY_PNL_TZ) — Windows/tzdata 미설치 환경 호환
 
+2025-09-08 v0.6.5
+- fix(analysis): 레짐 dict 대응(_norm_regime)으로 .lower() 예외 제거
+- fix(ui): 컨트롤패널 자동매매 토글 시 bus.config(dict) 호환 및 router 활성화 동기화
+- feat(log): FEATURES/REGIME 로그 샘플링 모드(all|sample|off) + 요약 출력
+

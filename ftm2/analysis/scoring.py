@@ -55,10 +55,32 @@ def _score_from_contrib(c: Dict) -> float:
     return (c.get("momentum", 0.0) + c.get("meanrev", 0.0) + c.get("breakout", 0.0) + c.get("carry", 0.0))
 
 
+
+# (추가) 레짐 정규화 헬퍼: 문자열이 아니면 안전 추출
+def _norm_regime(regime) -> str:
+    # dict 형태: name/state/label/value 중 문자열 키 우선
+    if isinstance(regime, dict):
+        for k in ("name", "state", "label", "value"):
+            v = regime.get(k)
+            if isinstance(v, str):
+                return v
+        return str(regime)
+    if regime is None:
+        return ""
+    return str(regime)
+
+
 def _gate_checks(state, regime: str, rv_pr: float) -> Tuple[Dict, List[str]]:
     ok, block = {}, []
+    # ↓↓↓ 기존: (regime or "").lower().split("_")[0]
+    reg = _norm_regime(regime)
+    reg_head = reg.split("_")[0].lower()
+
     allow = set(_env_strs("REGIME_ALLOW", "trend,range"))
-    reg_ok = (regime or "").lower().split("_")[0] in allow
+    allow = {x.lower() for x in allow}
+
+    reg_ok = reg_head in allow
+
     ok["regime_ok"] = reg_ok
     if not reg_ok:
         block.append("regime")

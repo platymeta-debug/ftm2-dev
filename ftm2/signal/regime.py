@@ -10,10 +10,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Tuple, List, Any, Optional
 import logging
+import os
 
 log = logging.getLogger("ftm2.regime")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# [ANCHOR:REGIME_LOG] begin
+_reg_count: Dict[str, int] = {}
+
+
+def _should_log_regime(i: int, total: int) -> bool:
+    mode = os.getenv("REGIME_LOG_MODE", "sample").lower()
+    if mode == "off":
+        return False
+    if mode == "all":
+        return True
+    step = max(1, int(os.getenv("REGIME_LOG_SAMPLE_N", "50")))
+    return i == 0 or i == total - 1 or (i % step == 0)
+# [ANCHOR:REGIME_LOG] end
 
 
 @dataclass
@@ -196,11 +211,28 @@ class RegimeClassifier:
 
             # 변경 시에만 out
             if prev_code != code:
-                log.info("[REGIME_CHANGE] %s %s → %s (ema=%.5f rv_pr=%.3f)", sym, prev_code, code, ema_spread, rv_pr)
+                idx = _reg_count.get(sym, 0)
+                _reg_count[sym] = idx + 1
+                if _should_log_regime(idx, 10 ** 9):
+                    log.info(
+                        "[REGIME_CHANGE] %s %s → %s (ema=%.5f rv_pr=%.3f)",
+                        sym,
+                        prev_code,
+                        code,
+                        ema_spread,
+                        rv_pr,
+                    )
                 out.append({"symbol": sym, "interval": self.interval, "T": T, "regime": regime})
             else:
                 # tracing 로그는 낮은 레벨로
-                log.debug("[REGIME] %s %s age=%d (ema=%.5f rv_pr=%.3f)", sym, code, regime["age"], ema_spread, rv_pr)
+                log.debug(
+                    "[REGIME] %s %s age=%d (ema=%.5f rv_pr=%.3f)",
+                    sym,
+                    code,
+                    regime["age"],
+                    ema_spread,
+                    rv_pr,
+                )
 
         return out
 
@@ -227,5 +259,15 @@ class RegimeClassifier:
         regime = {"code": code, "ema": float(ema_spread), "rv_pr": rv_pr, "ts": int(feats.get("ts") or 0)}
         bus.update_regime(sym, itv, regime)
         if prev != code:
-            log.info("[REGIME_CHANGE] %s %s → %s (ema=%.5f rv_pr=%.3f)", sym, prev, code, ema_spread, rv_pr)
+            idx = _reg_count.get(sym, 0)
+            _reg_count[sym] = idx + 1
+            if _should_log_regime(idx, 10 ** 9):
+                log.info(
+                    "[REGIME_CHANGE] %s %s → %s (ema=%.5f rv_pr=%.3f)",
+                    sym,
+                    prev,
+                    code,
+                    ema_spread,
+                    rv_pr,
+                )
     # [ANCHOR:REGIME_UPDATE] end
