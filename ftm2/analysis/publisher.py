@@ -102,6 +102,7 @@ class AnalysisPublisher:
         def _status_emoji(level: str) -> str:
             return {"READY":"✅", "CANDIDATE":"🟡", "SCOUT":"🩶"}.get(level,"🩶")
 
+
         def _norm_regime_txt(reg):
             if isinstance(reg, dict):
                 for k in ("code", "name", "state", "label", "value"):
@@ -132,6 +133,7 @@ class AnalysisPublisher:
             lines.append(
                 f"• 이유: 모멘텀 {c.get('momentum',0):+.2f}, 돌파 {c.get('breakout',0):+.2f}, 평균회귀 {c.get('meanrev',0):+.2f} | 레짐 {reg_txt}, RV%tile {rv_txt} {'✅' if all([gates.get('regime_ok'),gates.get('rv_band_ok')]) else '⚠️'}"
             )
+
 
             # 계획(진입/사이즈/SL/TP)
             plan = best.plan

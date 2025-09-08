@@ -55,11 +55,13 @@ def _score_from_contrib(c: Dict) -> float:
     return (c.get("momentum", 0.0) + c.get("meanrev", 0.0) + c.get("breakout", 0.0) + c.get("carry", 0.0))
 
 
+
 # [ADD] Regime normalizer
 def _norm_regime(regime) -> str:
     """dict/None/str 혼용 입력을 안전한 문자열 코드로 정규화"""
     if isinstance(regime, dict):
         for k in ("code", "name", "state", "label", "value"):
+
             v = regime.get(k)
             if isinstance(v, str):
                 return v
@@ -69,12 +71,14 @@ def _norm_regime(regime) -> str:
     return str(regime)
 
 
+
 def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[str]]:
     ok, block = {}, []
     reg = _norm_regime(regime)
     reg_head = reg.split("_")[0].lower()
     allow = {x.lower() for x in _env_strs("REGIME_ALLOW", "trend,range")}
     reg_ok = reg_head in allow
+
     ok["regime_ok"] = reg_ok
     if not reg_ok:
         block.append("regime")
@@ -85,6 +89,7 @@ def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[st
     if not rv_ok:
         block.append("rv_band")
 
+
     risk_room = float(getattr(state, "risk", {}).get("room", 1.0)) if hasattr(state, "risk") else 1.0
     ok["risk_ok"] = risk_room > 0.0
     ok["risk_room"] = risk_room
@@ -94,6 +99,7 @@ def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[st
     ok["cooldown_s"] = max(0, cd_left)
     if cd_left > 0:
         block.append("cooldown")
+
     return ok, block
 
 
@@ -118,6 +124,7 @@ def _plan_preview(state, symbol: str, price: float) -> Dict:
     return dict(entry="market", size_qty_est=size_qty, notional_est=notional, risk_R=r_unit, sl=sl_atr, tp_ladder=tp_ladder)
 
 
+
 def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> ScoreDetail:
     # rv_pr 폴백: feats → regime.dict
     rv_pr = feats.get("rv_pr")
@@ -125,6 +132,7 @@ def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> Sc
         rv_pr = regime.get("rv_pr") or regime.get("rvp")
 
     ema, rv20, atr, ret1 = feats.get("ema"), feats.get("rv20"), feats.get("atr"), feats.get("ret1")
+
     direction = _calc_direction(ema, ret1)
     contrib = _contrib(ema, rv20, ret1, rv_pr)
     score = _score_from_contrib(contrib)
@@ -137,6 +145,7 @@ def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> Sc
     plan = _plan_preview(state, symbol, price)
 
     regime_str = _norm_regime(regime) or "N/A"
+
     return ScoreDetail(
         symbol=symbol,
         tf=tf,
@@ -144,6 +153,7 @@ def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> Sc
         direction=direction,
         p_up=round(p_up, 2),
         regime=regime_str,
+
         ind=dict(ema=ema, rv20=rv20, atr=atr, ret1=ret1, rv_pr=rv_pr),
         contrib={k: round(v, 2) for k, v in contrib.items()},
         gates=gates_ok,

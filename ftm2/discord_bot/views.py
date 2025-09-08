@@ -9,9 +9,11 @@ log = logging.getLogger(__name__)
 
 # [ANCHOR:DISCORD_EXEC_TOGGLE] begin
 async def apply_exec_toggle(bus, active: bool, orchestrator=None):
+
     if not hasattr(bus, "config") or not isinstance(bus.config, dict):
         bus.config = {}
     bus.config["exec_active"] = bool(active)
+
 
     try:
         if orchestrator and hasattr(orchestrator, "exec_router"):
@@ -21,6 +23,7 @@ async def apply_exec_toggle(bus, active: bool, orchestrator=None):
     except Exception as e:
         if hasattr(orchestrator, "log"):
             orchestrator.log.warning(f"[CTRL][WARN] set exec_active failed: {e}")
+
 # [ANCHOR:DISCORD_EXEC_TOGGLE] end
 
 
@@ -38,14 +41,18 @@ try:
                            custom_id="ftm2:exec:on")
         async def btn_on(self, interaction: "discord.Interaction", button: "discord.ui.Button"):
             await apply_exec_toggle(self.bus, True, orchestrator=self.orch)
+
             await interaction.response.send_message("✅ 자동 매매: ON", ephemeral=True)
+
 
         @discord.ui.button(label="자동 매매 OFF",
                            style=discord.ButtonStyle.danger,
                            custom_id="ftm2:exec:off")
         async def btn_off(self, interaction: "discord.Interaction", button: "discord.ui.Button"):
             await apply_exec_toggle(self.bus, False, orchestrator=self.orch)
+
             await interaction.response.send_message("⛔ 자동 매매: OFF", ephemeral=True)
+
 except Exception:
     pass
 # [ANCHOR:PANEL_VIEWS] end
