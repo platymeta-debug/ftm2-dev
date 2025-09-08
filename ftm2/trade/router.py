@@ -100,6 +100,43 @@ class OrderRouter:
             return True
         return False
 
+    def _send_adjust(self, sym: str, side: str, qty: float, reduce_only: bool = False, tif: str = "GTC") -> dict:
+        self._ensure_meta([sym])
+        step = (self._meta.get(sym) or {}).get("step", 0.001)
+        qty_r = _round_step(qty, step)
+        if qty_r <= 0:
+            raise ValueError("qty<=0")
+        if not self.cfg.active:
+            self.log.info("[EXEC_DRY] %s %s qty=%s", sym, side, qty_r)
+            return {"ok": True, "dry": True}
+        payload = {"symbol": sym, "side": side, "type": self.cfg.order_type,
+                   "quantity": f"{qty_r:.10f}".rstrip("0").rstrip(".")}
+        if reduce_only:
+            payload["reduceOnly"] = True
+        if tif:
+            payload["timeInForce"] = tif
+        return self.cli.create_order(payload)
+
+    def consume_amt(self, amt):
+        sym = amt["symbol"]
+        plan = amt["plan"]
+        acts = amt["actions"]
+        gates = amt["summary"]["gates"]
+        if not all([gates.get("regime_ok"), gates.get("rv_band_ok"), gates.get("risk_ok"), gates.get("cooldown_ok")]):
+            self.log.info("[EXEC.AMT] DROP %s reason=gates", sym)
+            return
+        for a in acts:
+            side = a["side"]
+            qty = float(a["qty"])
+            if qty <= 0:
+                self.log.info("[EXEC.AMT] DROP %s reason=qty<=0", sym)
+                continue
+            try:
+                self.log.info("[EXEC.AMT] SEND %s %s qty=%.6f reason=AMT/READY", sym, side, qty)
+                self._send_adjust(sym, side, qty, reduce_only=a.get("reduce_only", False), tif=plan.get("tif", "GTC"))
+            except Exception as e:
+                self.log.warning("[EXEC.AMT][WARN] %s %s: %s", sym, side, e)
+
     def sync(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
         intents = snapshot.get("intents") or {}
         open_orders = snapshot.get("open_orders") or {}

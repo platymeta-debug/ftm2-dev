@@ -1,10 +1,21 @@
-# -*- coding: utf-8 -*-
-"""SQLite helpers and schema migration."""
-from __future__ import annotations
-
+import os
+import os
 import sqlite3
 
-# [ANCHOR:DB_INIT]
+_conn: sqlite3.Connection | None = None
+
+
+def get_conn(db_path: str | None = None) -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        path = db_path or os.getenv("DB_PATH", "./runtime/trader.db")
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        _conn = sqlite3.connect(path, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL;")
+        _conn.execute("PRAGMA synchronous=NORMAL;")
+    return _conn
+
 
 def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
     cur = conn.execute(f"PRAGMA table_info({table})")
@@ -12,8 +23,7 @@ def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 
 
 def init_db(db_path: str = "./runtime/trader.db") -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = get_conn(db_path)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS config (
@@ -30,5 +40,3 @@ def init_db(db_path: str = "./runtime/trader.db") -> sqlite3.Connection:
             pass
         conn.commit()
     return conn
-
-__all__ = ["init_db"]

@@ -55,9 +55,9 @@ class AnalysisPublisher:
         기존 snapshot(marks/features/regimes/forecasts)을 사용하여
         간이 state 어댑터를 구성해 scoring/ticket 모듈을 재사용합니다.
         """
-        import json, os, math
+        import os, time
         from ftm2.analysis.scoring import compute_multi_tf
-        from ftm2.analysis.ticket import synthesize_ticket
+        from ftm2.discord.analysis_report import render_analysis_message
 
         # --- 간이 state 어댑터 구성 ---
         class _S:
@@ -107,69 +107,8 @@ class AnalysisPublisher:
 
         # --- 심볼 목록 ---
         syms = getattr(self.bot.bus, "symbols", None) or snap.get("symbols") or sorted(state.marks.keys())
-
-        lines = [f"🧠 실시간 분석 리포트 v2 ({state.now_iso_utc()})  ※ 데이터: live · 트레이딩: {state.trade_mode}"]
-        def _status_emoji(level: str) -> str:
-            return {"READY":"✅", "CANDIDATE":"🟡", "SCOUT":"🩶"}.get(level,"🩶")
-
-
-        def _norm_regime_txt(reg):
-            if isinstance(reg, dict):
-                for k in ("code", "name", "state", "label", "value"):
-                    v = reg.get(k)
-                    if isinstance(v, str):
-                        return v
-                return "N/A"
-            if reg is None:
-                return "N/A"
-            return str(reg)
-
-        for sym in syms:
-            details = compute_multi_tf(state, sym)
-            ticket = synthesize_ticket(details)
-            # 최상위 표현용 항목(READY 우선, 점수/확률 보조)
-            best = max(details, key=lambda d: (d.readiness.get('level')=="READY", d.score, d.p_up))
-            emoji = _status_emoji(best.readiness.get("level"))
-
-            # 요약줄
-            lines.append("")
-            lines.append(f"{sym} — {emoji} {best.readiness.get('level')} {best.direction} {best.score:+.2f} (p_up {best.p_up:.2f})")
-
-            # 이유(기여 상위), 레짐/변동성
-            c = best.contrib; ind = best.ind; gates = best.gates
-            reg_txt = _norm_regime_txt(best.regime)
-            rv_val = ind.get("rv_pr")
-            rv_txt = "—" if rv_val is None else f"{float(rv_val):.3f}"
-            lines.append(
-                f"• 이유: 모멘텀 {c.get('momentum',0):+.2f}, 돌파 {c.get('breakout',0):+.2f}, 평균회귀 {c.get('meanrev',0):+.2f} | 레짐 {reg_txt}, RV%tile {rv_txt} {'✅' if all([gates.get('regime_ok'),gates.get('rv_band_ok')]) else '⚠️'}"
-            )
-
-
-            # 계획(진입/사이즈/SL/TP)
-            plan = best.plan
-            base_ccy = sym.replace("USDT","")
-            try_size = float(plan.get("size_qty_est") or 0.0)
-            lines.append(f"• 계획: {plan.get('entry','?')} 진입, 크기 ~{try_size:.6f} {base_ccy}(≈${plan.get('notional_est',0):,.0f}, {plan.get('risk_R',0):.2f}R), SL {float(plan.get('sl',0)):.2f}×ATR, TP {','.join(str(x) for x in (plan.get('tp_ladder') or []))}R")
-
-            # 안전장치(게이트 상태)
-            lines.append(f"• 안전장치: regime_ok={gates.get('regime_ok')} rv_band_ok={gates.get('rv_band_ok')} risk_ok={gates.get('risk_ok')} cooldown_ok={gates.get('cooldown_ok')}")
-
-            # TF 흐름(가중합)
-            from ftm2.analysis.ticket import _vote
-            vt = _vote(details)
-            lines.append(f"• 신호흐름: {vt['flow']}  (가중합 L={vt['long']} / S={vt['short']})")
-
-            # READY 아니면 보류사유
-            blocks = best.readiness.get('blockers', [])
-            if best.readiness.get('level') != 'READY' and blocks:
-                lines.append(f"• 보류: {', '.join(blocks)}")
-
-            # trace 요약(JSON)
-            compact = dict(symbol=sym, readiness=best.readiness.get('level'), score=best.score, gates=best.gates, plan=best.plan)
-            lines.append("▼ trace")
-            lines.append("```json\n"+json.dumps(compact, ensure_ascii=False)+"\n```")
-
-        return "\n".join(lines)
+        details_by_symbol = {sym: compute_multi_tf(state, sym) for sym in syms}
+        return render_analysis_message(state, details_by_symbol)
     # [ANCHOR:ANALYSIS_PUBLISHER] end
 
 

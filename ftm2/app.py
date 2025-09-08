@@ -59,6 +59,11 @@ def _sleep_with_jitter(base_s: float) -> None:
 
     time.sleep(base_s + random.random() * (base_s * 0.1))
 
+
+def _export_details_for_symbol(state, symbol) -> list:
+    from ftm2.analysis.scoring import compute_multi_tf
+    return compute_multi_tf(state, symbol)
+
 # 로컬 모듈
 try:
     from ftm2.core.env import load_env_chain
@@ -170,6 +175,8 @@ except Exception:  # pragma: no cover
     from core.config import load_kpi_cfg  # type: ignore
     from discord.panel import render_kpi_message  # type: ignore
     from discord_bot.notify import enqueue_alert  # type: ignore
+
+from ftm2.analysis.ticket import build_amt
 
 try:
     from ftm2.ops.http import OpsHttp, OpsHttpConfig
@@ -525,42 +532,25 @@ class Orchestrator:
                 log.debug("[PRICE_POLL] %s price=%s ts=%s", symbol, price, ts)
             time.sleep(interval_s)
 
-    # [ANCHOR:ORCH_INTENT_SOURCE]
+    # [ANCHOR:ORCH_BRIDGE_AMT]
     def on_bar_close(self, sym: str, itv: str, bus) -> None:
-        from ftm2.utils.env import env_str, env_bool
-        mode = env_str("STRAT_MODE", "ensemble")
-        dummy_enabled = env_bool("DUMMY_INTENT", False)
-
-        intent = None
-        if mode == "ensemble":
-            rows = self.forecast.process_snapshot(bus.snapshot())
-            for r in rows:
-                if r.get("symbol") == sym:
-                    fc = r.get("forecast", {})
-                    intent = {
-                        "dir": fc.get("stance", "FLAT"),
-                        "score": float(fc.get("score", 0.0)),
-                        "reason": "ENSEMBLE",
-                        "tf": itv,
-                        "ts": int(r.get("T") or 0),
-                    }
-                    break
-        if intent is None and dummy_enabled:
-            import random, time as _t
-            sc = round(random.uniform(-0.9, 0.9), 1)
-            d = "LONG" if sc > 0 else "SHORT" if sc < 0 else "FLAT"
-            intent = {"dir": d, "score": float(sc), "reason": "DUMMY", "tf": itv, "ts": int(_t.time() * 1000)}
-        if intent is None:
-            return
-        if intent.get("reason") == "DUMMY" and not dummy_enabled:
-            log.debug("[INTENT] skip(dummy)")
-            return
-        bus.update_intent(sym, intent)
-        # 주문 실행은 리스크 루프 → router.sync(snapshot) 경로가 담당합니다.
-        # 의도(intent)는 버스에만 반영하고 여기서는 주문을 직접 호출하지 않습니다.
-        if not (self.exec_router.cfg.active and getattr(self, "cli_trade", None) and getattr(self.cli_trade, "order_active", False)):
-            log.info("[INTENT] %s %s / %.1f / reason=%s", sym, intent["dir"], intent["score"], intent["reason"])
-    # [ANCHOR:ORCH_INTENT_SOURCE] end
+        try:
+            details = _export_details_for_symbol(bus, sym)
+            amt = build_amt(bus, sym, details)
+            if amt:
+                if not hasattr(bus, "state"):
+                    bus.state = {}
+                bus.state.setdefault("amt", {})[amt["id"]] = amt
+                try:
+                    from ftm2.db.dao_tickets import insert_ticket
+                    insert_ticket(amt)
+                    self.log.info("[AMT.DB] insert id=%s", amt["id"])
+                except Exception as e:
+                    self.log.warning("[AMT.DB][WARN] %s", e)
+                if getattr(self.exec_router.cfg, "active", False):
+                    self.exec_router.consume_amt(amt)
+        except Exception as e:
+            self.log.exception("AMT bridge error: %s", e)
 
     def _features_loop(self, period_s: float = 0.5) -> None:
         """

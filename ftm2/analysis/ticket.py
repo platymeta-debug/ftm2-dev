@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Ticket builder based on multi-TF vote"""
+"""AMT builder based on multi-TF vote"""
 
-# [ANCHOR:TICKET_BUILDER]
+# [ANCHOR:TICKET_SYNTH]
 from typing import List, Dict
-import os, time, hashlib, json
+import os
+from ftm2.ticket.model import AMTTicket, make_amt_id
+from ftm2.config.aggr import load_aggr_profile
 
 
 def _weights() -> List[int]:
     return [int(x) for x in os.getenv("TF_VOTE_WEIGHTS", "1,1,2,3").split(",")]
 
 
-def _vote(details: List) -> Dict:
+def _vote(details) -> dict:
     tfs = os.getenv("TF_ORDER", "5m,15m,1h,4h").split(",")
     w = _weights()
     long_v, short_v, flat_v = 0, 0, 0
@@ -29,31 +31,60 @@ def _vote(details: List) -> Dict:
     return dict(long=long_v, short=short_v, flat=flat_v, flow=" / ".join(flow))
 
 
-def _trace_id(symbol: str) -> str:
-    raw = f"{symbol}-{time.time_ns()}"
-    return "ANL-" + hashlib.md5(raw.encode()).hexdigest()[:10]
-
-
-def synthesize_ticket(details: List) -> Dict | None:
-    if not details:
-        return None
-    symbol = details[0].symbol
-    # READY 레벨 중 최고 TF의 항목 선택
-    ready_items = [d for d in details if d.readiness.get("level") == "READY"]
-    best = max(ready_items, key=lambda d: (d.score, d.p_up), default=None)
-    if not best:
-        return None
-    vt = _vote(details)
-    reason = ["score>=OPEN_TH", "p_up>=PUP_TH", "regime_ok", "rv_band_ok", "risk_ok", "cooldown_ok"]
-    ticket = {
-        "symbol": symbol,
-        "reason": reason,
-        "dir": best.direction,
-        "score": best.score,
-        "p_up": best.p_up,
-        "plan": best.plan,
-        "tf_vote": {"long": vt["long"], "short": vt["short"], "flat": vt["flat"], "flow": vt["flow"]},
-        "trace_id": _trace_id(symbol),
+def _plan_from_prof(state, symbol, best, prof) -> dict:
+    price = state.marks.get(symbol)
+    atr = best.ind.get("atr") or 0.0
+    notional = float(state.monitor.get("equity", 0.0)) * prof["RISK_R"]
+    qty = max(prof["MIN_NOTIONAL"], notional) / max(1e-9, float(price))
+    return {
+        "entry": "market",
+        "qty": qty,
+        "notional": max(prof["MIN_NOTIONAL"], notional),
+        "risk_R": prof["RISK_R"],
+        "sl_atr_mult": prof["SL_ATR"],
+        "tp_ladder_R": prof["TP"],
+        "cooldown_s": prof["COOLDOWN_S"],
+        "min_notional": float(prof["MIN_NOTIONAL"]),
+        "tif": "GTC"
     }
-    return ticket
-# [ANCHOR:TICKET_BUILDER] end
+
+
+def build_amt(state, symbol: str, details: List) -> AMTTicket | None:
+    prof = load_aggr_profile(state)
+    vt = _vote(details)
+    best = max(details, key=lambda d: (d.readiness.get("level") == "READY", d.score, d.p_up))
+    lvl = best.readiness.get("level")
+    if lvl != "READY":
+        return None
+
+    plan = _plan_from_prof(state, symbol, best, prof)
+    side = "BUY" if best.direction == "LONG" else ("SELL" if best.direction == "SHORT" else "BUY")
+    actions = [{"type": "adjust", "side": side, "qty": plan["qty"], "reduce_only": False}]
+
+    amt: AMTTicket = {
+        "id": make_amt_id(symbol),
+        "symbol": symbol,
+        "created_ts": __import__("time").time(),
+        "aggr_level": prof["LEVEL"],
+        "summary": {
+            "direction": best.direction,
+            "score": best.score,
+            "p_up": best.p_up,
+            "regime": best.regime,
+            "rv_pr": best.ind.get("rv_pr"),
+            "readiness": lvl,
+            "gates": best.gates,
+            "tf_vote": vt
+        },
+        "plan": plan,
+        "actions": actions,
+        "trace": {
+            "contrib": best.contrib,
+            "inputs": {"features": "…", "forecast": "…", "regimes": "…"},
+            "thresholds": {"OPEN_TH": prof["OPEN_TH"], "PUP_TH": prof["PUP_TH"], "RV_BAND": prof["RV_BAND"], "REGIME_ALLOW": prof["REGIME_ALLOW"]}
+        },
+        "version": "AMT/1"
+    }
+    state.log.info("[AMT] build %s level=%d score=%+.2f gates=%s qty=%.6f",
+                   symbol, prof["LEVEL"], best.score, best.gates, plan["qty"])
+    return amt
