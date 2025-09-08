@@ -102,6 +102,18 @@ class AnalysisPublisher:
         def _status_emoji(level: str) -> str:
             return {"READY":"✅", "CANDIDATE":"🟡", "SCOUT":"🩶"}.get(level,"🩶")
 
+
+        def _norm_regime_txt(reg):
+            if isinstance(reg, dict):
+                for k in ("code", "name", "state", "label", "value"):
+                    v = reg.get(k)
+                    if isinstance(v, str):
+                        return v
+                return "N/A"
+            if reg is None:
+                return "N/A"
+            return str(reg)
+
         for sym in syms:
             details = compute_multi_tf(state, sym)
             ticket = synthesize_ticket(details)
@@ -115,8 +127,13 @@ class AnalysisPublisher:
 
             # 이유(기여 상위), 레짐/변동성
             c = best.contrib; ind = best.ind; gates = best.gates
-            rv_txt = "—" if (ind.get("rv_pr") is None) else f"{ind['rv_pr']:.3f}"
-            lines.append(f"• 이유: 모멘텀 {c.get('momentum',0):+.2f}, 돌파 {c.get('breakout',0):+.2f}, 평균회귀 {c.get('meanrev',0):+.2f} | 레짐 {best.regime}, RV%tile {rv_txt} {'✅' if all([gates.get('regime_ok'),gates.get('rv_band_ok')]) else '⚠️'}")
+            reg_txt = _norm_regime_txt(best.regime)
+            rv_val = ind.get("rv_pr")
+            rv_txt = "—" if rv_val is None else f"{float(rv_val):.3f}"
+            lines.append(
+                f"• 이유: 모멘텀 {c.get('momentum',0):+.2f}, 돌파 {c.get('breakout',0):+.2f}, 평균회귀 {c.get('meanrev',0):+.2f} | 레짐 {reg_txt}, RV%tile {rv_txt} {'✅' if all([gates.get('regime_ok'),gates.get('rv_band_ok')]) else '⚠️'}"
+            )
+
 
             # 계획(진입/사이즈/SL/TP)
             plan = best.plan

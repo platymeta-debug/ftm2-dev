@@ -56,11 +56,12 @@ def _score_from_contrib(c: Dict) -> float:
 
 
 
-# (추가) 레짐 정규화 헬퍼: 문자열이 아니면 안전 추출
+# [ADD] Regime normalizer
 def _norm_regime(regime) -> str:
-    # dict 형태: name/state/label/value 중 문자열 키 우선
+    """dict/None/str 혼용 입력을 안전한 문자열 코드로 정규화"""
     if isinstance(regime, dict):
-        for k in ("name", "state", "label", "value"):
+        for k in ("code", "name", "state", "label", "value"):
+
             v = regime.get(k)
             if isinstance(v, str):
                 return v
@@ -70,15 +71,12 @@ def _norm_regime(regime) -> str:
     return str(regime)
 
 
-def _gate_checks(state, regime: str, rv_pr: float) -> Tuple[Dict, List[str]]:
+
+def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[str]]:
     ok, block = {}, []
-    # ↓↓↓ 기존: (regime or "").lower().split("_")[0]
     reg = _norm_regime(regime)
     reg_head = reg.split("_")[0].lower()
-
-    allow = set(_env_strs("REGIME_ALLOW", "trend,range"))
-    allow = {x.lower() for x in allow}
-
+    allow = {x.lower() for x in _env_strs("REGIME_ALLOW", "trend,range")}
     reg_ok = reg_head in allow
 
     ok["regime_ok"] = reg_ok
@@ -91,20 +89,15 @@ def _gate_checks(state, regime: str, rv_pr: float) -> Tuple[Dict, List[str]]:
     if not rv_ok:
         block.append("rv_band")
 
-    # risk 여유(없으면 OK)
-    risk_room = float(getattr(state, "risk", {}).get("room", 1.0)) if hasattr(state, "risk") else 1.0
-    risk_ok = risk_room > 0.0
-    ok["risk_ok"] = risk_ok
-    ok["risk_room"] = risk_room
-    if not risk_ok:
-        block.append("risk")
 
-    # 쿨다운(없으면 OK)
-    cooldown_left = int(getattr(state, "cooldown", {}).get("sec_left", 0)) if hasattr(state, "cooldown") else 0
-    cool_ok = cooldown_left <= 0
-    ok["cooldown_ok"] = cool_ok
-    ok["cooldown_s"] = max(0, cooldown_left)
-    if not cool_ok:
+    risk_room = float(getattr(state, "risk", {}).get("room", 1.0)) if hasattr(state, "risk") else 1.0
+    ok["risk_ok"] = risk_room > 0.0
+    ok["risk_room"] = risk_room
+
+    cd_left = int(getattr(state, "cooldown", {}).get("sec_left", 0)) if hasattr(state, "cooldown") else 0
+    ok["cooldown_ok"] = cd_left <= 0
+    ok["cooldown_s"] = max(0, cd_left)
+    if cd_left > 0:
         block.append("cooldown")
 
     return ok, block
@@ -131,18 +124,27 @@ def _plan_preview(state, symbol: str, price: float) -> Dict:
     return dict(entry="market", size_qty_est=size_qty, notional_est=notional, risk_R=r_unit, sl=sl_atr, tp_ladder=tp_ladder)
 
 
-def compute_score_detail(state, symbol: str, tf: str, regime: str, feats: Dict) -> ScoreDetail:
-    ema, rv20, atr, ret1, rv_pr = feats.get("ema"), feats.get("rv20"), feats.get("atr"), feats.get("ret1"), feats.get("rv_pr")
+
+def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> ScoreDetail:
+    # rv_pr 폴백: feats → regime.dict
+    rv_pr = feats.get("rv_pr")
+    if rv_pr is None and isinstance(regime, dict):
+        rv_pr = regime.get("rv_pr") or regime.get("rvp")
+
+    ema, rv20, atr, ret1 = feats.get("ema"), feats.get("rv20"), feats.get("atr"), feats.get("ret1")
+
     direction = _calc_direction(ema, ret1)
     contrib = _contrib(ema, rv20, ret1, rv_pr)
     score = _score_from_contrib(contrib)
     # p_up 간이 캘리브레이션: 스코어 시그넘 기반
     p_up = 0.50 + 0.10 * (1 if score > 0 else (-1 if score < 0 else 0))
+
     gates_ok, blockers = _gate_checks(state, regime, rv_pr)
     ready = _readiness(score, p_up, gates_ok, blockers)
-
     price = state.marks.get(symbol)
     plan = _plan_preview(state, symbol, price)
+
+    regime_str = _norm_regime(regime) or "N/A"
 
     return ScoreDetail(
         symbol=symbol,
@@ -150,7 +152,8 @@ def compute_score_detail(state, symbol: str, tf: str, regime: str, feats: Dict) 
         score=round(score, 2),
         direction=direction,
         p_up=round(p_up, 2),
-        regime=regime or "N/A",
+        regime=regime_str,
+
         ind=dict(ema=ema, rv20=rv20, atr=atr, ret1=ret1, rv_pr=rv_pr),
         contrib={k: round(v, 2) for k, v in contrib.items()},
         gates=gates_ok,

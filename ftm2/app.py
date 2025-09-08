@@ -1387,8 +1387,24 @@ class Orchestrator:
             for s in self.symbols:
                 if s in marks:
                     lines.append(f"{s}={marks[s]['price']}")
-            uptime = self.bus.uptime_s()
-            log.info("[HEARTBEAT] mode=%s uptime=%ss symbols=%d marks={%s}", self.mode, uptime, len(marks), ", ".join(lines))
+            marks_str = ", ".join(lines)
+            uptime_s = self.bus.uptime_s()
+            exec_on = bool(
+                getattr(self.exec_router.cfg, "active", False)
+                or (
+                    getattr(self, "bus", None)
+                    and isinstance(self.bus.config, dict)
+                    and self.bus.config.get("exec_active")
+                )
+            )
+            log.info(
+                "[HEARTBEAT] mode=%s exec=%s uptime=%ss symbols=%d marks={%s}",
+                self.mode,
+                ("on" if exec_on else "off"),
+                uptime_s,
+                len(self.symbols),
+                marks_str,
+            )
             time.sleep(period_s)
 
     def _strategy_loop(self, period_s: float = 1.0) -> None:

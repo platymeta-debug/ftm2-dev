@@ -150,3 +150,8 @@
 - fix(ui): 컨트롤패널 자동매매 토글 시 bus.config(dict) 호환 및 router 활성화 동기화
 - feat(log): FEATURES/REGIME 로그 샘플링 모드(all|sample|off) + 요약 출력
 
+2025-09-08 v0.6.6
+- fix(analysis): 레짐 dict 정규화 및 rv_pr 폴백(feats→regime) — 게이트/표기 정상화
+- feat(ui): 하트비트에 exec=on/off 노출, 컨트롤패널 토글 시 [CTRL] 로그 출력
+- tweak(analysis-report): 렌더에서 레짐/RV%tile 안전 표기(딕트 노출 방지)
+
