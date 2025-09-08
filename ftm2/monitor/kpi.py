@@ -82,8 +82,9 @@ class KPIReporter:
         for sym, p in positions.items():
             qty = float(p.get("pa") or 0.0)
             px = float((marks.get(sym) or {}).get("price") or 0.0)
-            notional += abs(qty)*px
-        lever = (notional/equity) if equity>0 else 0.0
+            notional += abs(qty) * px
+        lever = (notional / equity) if equity > 0 else 0.0
+        gross = notional
 
         # 익스포저(사이드별)
         used_long = float(risk.get("used_long_ratio") or 0.0)
@@ -106,6 +107,7 @@ class KPIReporter:
             "uptime_s": up_s,
             "equity": equity,
             "lever": lever,
+            "gross": gross,
             "day_pnl_pct": day_pnl_pct,
             "day_cut": day_cut,
             "used_long": used_long,
