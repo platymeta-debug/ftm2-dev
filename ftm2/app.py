@@ -1349,6 +1349,7 @@ class Orchestrator:
                         "upnl": snap.get("upnl", 0.0),
                         "equity": snap.get("equity", 0.0),
                     })
+
                     try:
                         if not hasattr(self.bus, "state"):
                             class _S:  # pragma: no cover - simple holder
