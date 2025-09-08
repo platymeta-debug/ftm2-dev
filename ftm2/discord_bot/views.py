@@ -7,33 +7,23 @@ import discord  # type: ignore
 log = logging.getLogger(__name__)
 
 
-# [ANCHOR:PANEL_TOGGLE_SAFE] begin
-async def apply_exec_toggle(bus, active: bool, *, orchestrator=None):
-    # StateBus 보장
-    if not hasattr(bus, "config"):
-        class _Cfg: pass
-        bus.config = _Cfg()
-    prev = getattr(bus.config, "exec_active", None)
-    bus.config.exec_active = bool(active)
+# [ANCHOR:DISCORD_EXEC_TOGGLE] begin
+async def apply_exec_toggle(bus, active: bool, orchestrator=None):
+    # bus.config 는 dict 이므로 키 기반으로 갱신
+    if not hasattr(bus, "config") or not isinstance(bus.config, dict):
+        bus.config = {}
+    bus.config["exec_active"] = bool(active)
 
-    # 오케스트레이터에게 알림(있으면)
-    if orchestrator and hasattr(orchestrator, "on_exec_toggle"):
-        try:
-            await orchestrator.on_exec_toggle(bool(active))
-        except Exception:
-            log.exception("E_ORCH_TOGGLE_CB")
-
-    # (선택) DB upsert는 기존 유틸 사용
-
+    # 오케스트레이터/실행 라우터에 즉시 반영
     try:
-        from ftm2.panel import _db_upsert_exec_active
-        _db_upsert_exec_active(bool(active))
-    except Exception:
-        pass
-
-    log.info("[EXEC] %s (source=PANEL, prev=%s)",
-             "enabled" if active else "disabled", prev)
-# [ANCHOR:PANEL_TOGGLE_SAFE] end
+        if orchestrator and hasattr(orchestrator, "exec_router"):
+            orchestrator.exec_router.cfg.active = bool(active)
+        if hasattr(orchestrator, "log"):
+            orchestrator.log.info(f"[CTRL] EXEC_ACTIVE set to {bool(active)}")
+    except Exception as e:
+        if hasattr(orchestrator, "log"):
+            orchestrator.log.warning(f"[CTRL][WARN] failed to set exec active: {e}")
+# [ANCHOR:DISCORD_EXEC_TOGGLE] end
 
 
 
@@ -50,14 +40,14 @@ try:
                            custom_id="ftm2:exec:on")
         async def btn_on(self, interaction: "discord.Interaction", button: "discord.ui.Button"):
             await apply_exec_toggle(self.bus, True, orchestrator=self.orch)
-            await interaction.response.send_message("✅ 자동 매매: **ON**", ephemeral=True)
+            await interaction.response.send_message("✅ 자동 매매가 켜졌습니다.", ephemeral=True)
 
         @discord.ui.button(label="자동 매매 OFF",
                            style=discord.ButtonStyle.danger,
                            custom_id="ftm2:exec:off")
         async def btn_off(self, interaction: "discord.Interaction", button: "discord.ui.Button"):
             await apply_exec_toggle(self.bus, False, orchestrator=self.orch)
-            await interaction.response.send_message("🛑 자동 매매: **OFF**", ephemeral=True)
+            await interaction.response.send_message("⛔ 자동 매매가 꺼졌습니다.", ephemeral=True)
 except Exception:
     pass
 # [ANCHOR:PANEL_VIEWS] end

@@ -292,12 +292,22 @@ def resolve_equity(bus) -> float:
 # [ANCHOR:EQUITY_SOURCE] end
 
 # [ANCHOR:ORCH_EQUITY_LOOP]
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 
+def _safe_tz():
+    import os
+    name = os.getenv("DAY_PNL_TZ", "Asia/Seoul")
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        # Windows 등 tzdata 미설치 환경 폴백
+        return timezone.utc
+
+
 def _kst_today_str():
-    tz = ZoneInfo(os.getenv("DAY_PNL_TZ", "Asia/Seoul"))
+    tz = _safe_tz()
     return datetime.now(tz).strftime("%Y-%m-%d")
 
 
@@ -546,9 +556,9 @@ class Orchestrator:
             log.debug("[INTENT] skip(dummy)")
             return
         bus.update_intent(sym, intent)
-        if self.exec_router.cfg.active and getattr(self, "cli_trade", None) and getattr(self.cli_trade, "order_active", False):
-            self.exec_router.route(intent)
-        else:
+        # 주문 실행은 리스크 루프 → router.sync(snapshot) 경로가 담당합니다.
+        # 의도(intent)는 버스에만 반영하고 여기서는 주문을 직접 호출하지 않습니다.
+        if not (self.exec_router.cfg.active and getattr(self, "cli_trade", None) and getattr(self.cli_trade, "order_active", False)):
             log.info("[INTENT] %s %s / %.1f / reason=%s", sym, intent["dir"], intent["score"], intent["reason"])
     # [ANCHOR:ORCH_INTENT_SOURCE] end
 

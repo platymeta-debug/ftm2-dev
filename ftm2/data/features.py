@@ -15,10 +15,38 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, List, Any, Optional
 import math
 import logging
+import os
 
 log = logging.getLogger("ftm2.features")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# [ANCHOR:FEATURES_LOG] begin
+_feat_count: Dict[Tuple[str, str], int] = {}
+
+
+def _should_log_features(symbol: str, tf: str, i: int, total: int) -> bool:
+    mode = os.getenv("FEATURES_LOG_MODE", "sample").lower()
+    if mode == "off":
+        return False
+    if mode == "all":
+        return True
+    step = max(1, int(os.getenv("FEATURES_LOG_SAMPLE_N", "50")))
+    return i == 0 or i == total - 1 or (i % step == 0)
+
+
+def log_features(logger, symbol: str, tf: str, i: int, total: int, T: int, ret1: float, rv20: float, atr: float) -> None:
+    if _should_log_features(symbol, tf, i, total):
+        logger.info(
+            f"[FEATURES] {symbol} {tf} T={T} ret1={ret1:+.5f} rv20={rv20:.5f} atr={atr:.5f}"
+        )
+    elif i == total - 1:
+        skipped = max(0, total - (total // max(1, int(os.getenv("FEATURES_LOG_SAMPLE_N", "50")))) - 2)
+        if skipped > 0:
+            logger.info(
+                f"[FEATURES][SUMMARY] {symbol} {tf} warmup {total} bars (logged sampled, skipped ~{skipped})"
+            )
+# [ANCHOR:FEATURES_LOG] end
 
 
 # ----------------------------- utils -----------------------------
@@ -258,8 +286,20 @@ class FeatureEngine:
                         feats[f"pr_{key_name}"] = percentile_rank(sv, float(feats[key_name]))
 
                 out.append({"symbol": sym, "interval": itv, "T": T, "features": feats})
-                log.info("[FEATURES] %s %s T=%s ret1=%.5f rv20=%.5f atr=%.5f",
-                         sym, itv, T, feats.get("ret1", 0.0), feats.get("rv20", 0.0), feats.get("atr14", 0.0))
+                key = (sym, itv)
+                i = _feat_count.get(key, 0)
+                _feat_count[key] = i + 1
+                log_features(
+                    log,
+                    sym,
+                    itv,
+                    i,
+                    10 ** 9,
+                    T,
+                    feats.get("ret1", 0.0),
+                    feats.get("rv20", 0.0),
+                    feats.get("atr14", 0.0),
+                )
         return out
 
     # [ANCHOR:FEATURES_UPDATE] begin
@@ -291,7 +331,19 @@ class FeatureEngine:
             "ts": int(bar.get("T") or 0),
         }
         bus.update_features(sym, itv, out)
-        log.info("[FEATURES] %s %s T=%s ret1=%.5f rv20=%.5f atr=%.5f",
-                 sym, itv, out["ts"], out["ret1"], out["rv20"], out["atr"])
+        key = (sym, itv)
+        i = _feat_count.get(key, 0)
+        _feat_count[key] = i + 1
+        log_features(
+            log,
+            sym,
+            itv,
+            i,
+            10 ** 9,
+            out["ts"],
+            out["ret1"],
+            out["rv20"],
+            out["atr"],
+        )
     # [ANCHOR:FEATURES_UPDATE] end
 
