@@ -161,12 +161,14 @@ except Exception:  # pragma: no cover
     from core.config import load_order_ledger_cfg  # type: ignore
 
 try:
-    from ftm2.monitor.kpi import KPIReporter, KPIConfig
+    from ftm2.monitor.kpi import compute_kpi_snapshot
     from ftm2.core.config import load_kpi_cfg
+    from ftm2.discord.panel import render_kpi_message
     from ftm2.discord_bot.notify import enqueue_alert
 except Exception:  # pragma: no cover
-    from monitor.kpi import KPIReporter, KPIConfig  # type: ignore
+    from monitor.kpi import compute_kpi_snapshot  # type: ignore
     from core.config import load_kpi_cfg  # type: ignore
+    from discord.panel import render_kpi_message  # type: ignore
     from discord_bot.notify import enqueue_alert  # type: ignore
 
 try:
@@ -289,6 +291,41 @@ def resolve_equity(bus) -> float:
     return 1000.0
 # [ANCHOR:EQUITY_SOURCE] end
 
+# [ANCHOR:ORCH_EQUITY_LOOP]
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+def _kst_today_str():
+    tz = ZoneInfo(os.getenv("DAY_PNL_TZ", "Asia/Seoul"))
+    return datetime.now(tz).strftime("%Y-%m-%d")
+
+
+def _get_day_e0(state):
+    return state.config.get(f"day_e0_{_kst_today_str()}")
+
+
+def _set_day_e0(state, equity: float):
+    key = f"day_e0_{_kst_today_str()}"
+    state.config[key] = equity
+    try:
+        state.db.upsert_config(key, str(equity))
+        state.log.info(f"[DAY_E0] {_kst_today_str()} KST equity_open={equity:.2f}")
+    except Exception as e:
+        state.log.warning(f"[DAY_E0][WARN] persist failed: {e}")
+
+
+def equity_heartbeat_loop(state):
+    snap = state.snapshot()
+    equity = (snap.get("account") or {}).get("totalMarginBalance")
+    if equity is None:
+        return
+    if _get_day_e0(state) is None:
+        _set_day_e0(state, equity)
+    mon = snap.get("monitor") or {}
+    mon["equity"] = equity
+    state.set_monitor_state(mon)
+
 # [ANCHOR:ORCH]
 class Orchestrator:
     def __init__(self) -> None:
@@ -309,12 +346,20 @@ class Orchestrator:
         except Exception:
             pass
 
+        self.bus.config = {}
+        self.bus.db = self.db
+        self.bus.log = log
+
         modes = load_modes_cfg(self.db)
         exv = load_exec_cfg(self.db)
         # [ANCHOR:DUAL_MODE]
         # 시세 스트림은 항상 라이브 사용
         self.cli_data = BinanceClient.for_data("live")
         self.cli_trade = BinanceClient.for_trade(modes.trade_mode, order_active=exv.active)
+        try:
+            self.cli_trade.warmup_filters(self.symbols)
+        except Exception:
+            pass
         self.streams = StreamManager(
             self.cli_data,
             None if modes.trade_mode == "dry" else self.cli_trade,
@@ -427,13 +472,7 @@ class Orchestrator:
                 min_orders=int(ol.min_orders),
             ),
         )
-        kcv = load_kpi_cfg(self.db)
-        self.kpi = KPIReporter(KPIConfig(
-            enabled=kcv.enabled,
-            report_sec=kcv.report_sec,
-            to_discord=kcv.to_discord,
-            only_on_change=kcv.only_on_change,
-        ))
+        self.kpi_cfg = load_kpi_cfg(self.db)
         # REPLAY 엔진 준비 (라이브 스트림과 병행하지 않도록 ENV로 제어)
         rcv = load_replay_cfg(self.db)
         self.replay = ReplayEngine(
@@ -456,6 +495,7 @@ class Orchestrator:
 
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
+        self._started = False
 
         # 부팅 요약
         log.info("[BOOT_ENV_SUMMARY] MODE=%s, SYMBOLS=%s, TF_EXEC=%s, TF_SIGNAL=%s", self.mode, self.symbols, self.tf_exec, self.kline_intervals)
@@ -707,20 +747,15 @@ class Orchestrator:
 
             try:
                 new_k = load_kpi_cfg(self.db)
-                cur = self.kpi.cfg
+                cur = self.kpi_cfg
                 if (
                     cur.enabled != new_k.enabled
                     or cur.report_sec != new_k.report_sec
                     or cur.to_discord != new_k.to_discord
                     or cur.only_on_change != new_k.only_on_change
                 ):
-                    self.kpi.cfg = KPIConfig(
-                        new_k.enabled,
-                        new_k.report_sec,
-                        new_k.to_discord,
-                        new_k.only_on_change,
-                    )
-                    log.info("[KPI] cfg reload: %s", self.kpi.cfg)
+                    self.kpi_cfg = new_k
+                    log.info("[KPI] cfg reload: %s", self.kpi_cfg)
             except Exception as e:
                 log.warning("[KPI] cfg reload err: %s", e)
 
@@ -987,30 +1022,21 @@ class Orchestrator:
 
     def _kpi_loop(self) -> None:
         while not self._stop.is_set():
-            snap = self.bus.snapshot()
             try:
-                if not self.kpi.cfg.enabled:
+                if not self.kpi_cfg.enabled:
                     time.sleep(2.0)
                     continue
-                k = self.kpi.compute(snap)
-                try:
-                    cur = self.bus.snapshot().get("monitor") or {}
-                    self.bus.set_monitor_state({**cur, "kpi": k})
-                except Exception:
-                    pass
-                if self.kpi.should_post(k):
-                    txt = self.kpi.format_text(k)
-                    log.info("[KPI] %s", txt.replace("\n", " | "))
-                    if self.kpi.cfg.to_discord:
-                        try:
-                            enqueue_alert(txt, intent="panel")
-                        except Exception:
-                            pass
-                else:
-                    log.debug("[KPI][SKIP] no-change")
+                compute_kpi_snapshot(self.bus)
+                txt = render_kpi_message(self.bus)
+                log.info("[KPI] %s", txt.replace("\n", " | "))
+                if self.kpi_cfg.to_discord:
+                    try:
+                        enqueue_alert(txt, intent="panel")
+                    except Exception:
+                        pass
             except Exception as e:
                 log.warning("[KPI] loop err: %s", e)
-            time.sleep(max(3.0, float(self.kpi.cfg.report_sec)))
+            time.sleep(max(3.0, float(self.kpi_cfg.report_sec)))
 
     # [ANCHOR:ORCH_EQUITY_LOOP] begin
     def _equity_loop(self, period_s: int | None = None) -> None:
@@ -1051,6 +1077,7 @@ class Orchestrator:
                         avail,
                         eq,
                     )
+                    equity_heartbeat_loop(self.bus)
                     backoff = period
             except Exception as e:
                 log.warning(
@@ -1138,6 +1165,10 @@ class Orchestrator:
 
 
     def start(self) -> None:
+        if self._started:
+            log.info("[APP] start() skipped (already started)")
+            return
+        self._started = True
         # 심볼별 마크프라이스 폴러는 M1.1 임시 → WS로 대체
         # for sym in self.symbols:
         #     t = threading.Thread(target=self._price_poller, args=(sym,), name=f"poll:{sym}", daemon=True)
@@ -1175,9 +1206,7 @@ class Orchestrator:
                 log.info("[EQUITY] bootstrap: totalMarginBalance=%.2f", snap.get("equity", 0.0))
 
                 try:
-                    k = self.kpi.compute(self.bus.snapshot())
-                    cur = self.bus.snapshot().get("monitor") or {}
-                    self.bus.set_monitor_state({**cur, "kpi": k})
+                    compute_kpi_snapshot(self.bus)
                 except Exception:
                     pass
         except Exception as e:
@@ -1320,14 +1349,17 @@ class Orchestrator:
                         "upnl": snap.get("upnl", 0.0),
                         "equity": snap.get("equity", 0.0),
                     })
-                    log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", snap.get("equity", 0.0))
-
                     try:
-                        k = self.kpi.compute(self.bus.snapshot())
-                        cur = self.bus.snapshot().get("monitor") or {}
-                        self.bus.set_monitor_state({**cur, "kpi": k})
+                        if not hasattr(self.bus, "state"):
+                            class _S:  # pragma: no cover - simple holder
+                                pass
+                            self.bus.state = _S()
+                        self.bus.state.equity_usdt = float(snap.get("equity") or 0.0)
                     except Exception:
                         pass
+                    equity_heartbeat_loop(self.bus)
+                    compute_kpi_snapshot(self.bus)
+                    log.info("[EQUITY] updated: totalMarginBalance=%.2f src=ACCOUNT", snap.get("equity", 0.0))
 
             except Exception as e:
                 log.warning("E_EQUITY_POLL_FAIL %s", e)

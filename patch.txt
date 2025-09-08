@@ -123,4 +123,13 @@
 - feat(kpi): 대시보드 ‘사용가능’ 잔고 추가, 포지션 상세 표기 개선
 - feat(loops): Equity/Positions 폴링 중복 방지 가드
 
+ 
+2025-09-08 v0.6.2
+- feat(kpi): 당일손익 실시간 계산(DAY_E0 KST 기준) + config 보존
+- feat(kpi): 익스포저 '실제/타깃' 분리 표기 및 폴백
+- feat(cfg): TF_SIGNAL 기본 1m 포함으로 초기 예측 가속
 
+2025-09-08 v0.6.1
+- feat(exec): 주문 프리플라이트(거래소 필터/stepSize/NOTIONAL) + per_sym 레버리지 캡 수량 반영
+- feat(exec): -4005 백오프(심볼별 쿨다운) 및 프리플라이트 진단 로그
+- feat(connector): exchangeInfo 필터 캐시(warmup)

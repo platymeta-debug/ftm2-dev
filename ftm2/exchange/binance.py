@@ -25,6 +25,7 @@ import concurrent.futures
 from urllib.parse import urlencode
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any, List
+from functools import lru_cache
 
 from .http_driver import HttpDriver
 
@@ -314,6 +315,10 @@ class BinanceClient:
         self.order_active = order_active
         self.http_timeout = http_timeout
 
+        self._filters_cache = {}
+        self._filters_ttl_s = 300
+        self._filters_last = 0
+
         self.http: str | None = None
         self._bind_http_driver()
 
@@ -338,6 +343,48 @@ class BinanceClient:
 
     def _now_ms(self) -> int:
         return int(time.time() * 1000 + self._clock_offset_ms)
+
+    def warmup_filters(self, symbols):
+        now = time.time()
+        if now - self._filters_last < self._filters_ttl_s and self._filters_cache:
+            return
+        r = self._http_request("GET", "/fapi/v1/exchangeInfo")
+        if not r.get("ok"):
+            return
+        data = r.get("data") or {}
+        mp = {}
+        for s in data.get("symbols", []):
+            sym = s.get("symbol")
+            if sym not in symbols:
+                continue
+            lot = mlot = notional = None
+            for f in s.get("filters", []):
+                t = f.get("filterType")
+                if t == "LOT_SIZE":
+                    lot = {
+                        "minQty": float(f["minQty"]),
+                        "maxQty": float(f["maxQty"]),
+                        "stepSize": float(f["stepSize"]),
+                    }
+                elif t == "MARKET_LOT_SIZE":
+                    mlot = {
+                        "minQty": float(f["minQty"]),
+                        "maxQty": float(f["maxQty"]),
+                        "stepSize": float(f["stepSize"]),
+                    }
+                elif t == "NOTIONAL":
+                    notional = {
+                        "minNotional": float(f.get("notional") or 0.0),
+                        "applyMinToMarket": bool(f.get("applyMinToMarket", True)),
+                    }
+            mp[sym] = {"lot_size": lot, "market_lot_size": mlot, "notional": notional}
+        self._filters_cache = mp
+        self._filters_last = now
+        log.info(f"[FILTERS] warmed {list(mp.keys())}")
+
+    @lru_cache(maxsize=128)
+    def get_symbol_filters(self, symbol: str) -> dict:
+        return self._filters_cache.get(symbol, {})
 
     # ------------------------------------------------------------------
     # Factories
@@ -618,8 +665,14 @@ class BinanceClient:
         for b in r.get("data", []):
             if b.get("asset") == "USDT":
                 wb = float(b.get("balance") or b.get("wb") or 0.0)
-                cw = float(b.get("crossWalletBalance") or b.get("cw") or 0.0)
-                return {"wallet": wb, "avail": cw}
+                # Futures /v2/balance 응답에는 availableBalance가 존재
+                avail = float(
+                    b.get("availableBalance")
+                    or b.get("cw")
+                    or b.get("crossWalletBalance")
+                    or 0.0
+                )
+                return {"wallet": wb, "avail": avail}
         raise RuntimeError("USDT_NOT_FOUND")
 
     # [ANCHOR:BINANCE_CLIENT_BAL]
