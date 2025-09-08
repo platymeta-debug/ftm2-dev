@@ -40,11 +40,13 @@ def _calc_exposure_target(snap) -> Tuple[float, float]:
 
 
 def _get_day_e0(state) -> float:
-    from datetime import datetime
+    from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
     import os
-
-    tz = ZoneInfo(os.getenv("DAY_PNL_TZ", "Asia/Seoul"))
+    try:
+        tz = ZoneInfo(os.getenv("DAY_PNL_TZ", "Asia/Seoul"))
+    except Exception:
+        tz = timezone.utc
     key = f"day_e0_{datetime.now(tz).strftime('%Y-%m-%d')}"
     return float(state.config.get(key) or 0.0)
 

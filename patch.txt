@@ -139,3 +139,9 @@
 - feat(ticket): 티켓 스키마 및 합의도 계산, trace_id 생성
 - feat(statebus): 분석 스냅샷 퍼블리시 헬퍼 추가
 - feat(env): OPEN_TH/PUP_TH/REGIME_ALLOW/RV_PCTL_BAND/TF_ORDER/TF_VOTE_WEIGHTS/RISK_R_TARGET/SL_ATR/TP_LADDER
+
+2025-09-08 v0.6.4
+- feat(analysis-report): 퍼블리셔 렌더 v2 연결 — 점수/게이트/레디니스/플랜/TF합의/trace 출력
+- fix(orch): on_bar_close에서 미존재 API(exec_router.route) 호출 제거 → 리스크 루프 일원화
+- fix(kpi): ZoneInfo 미탐색 시 UTC 폴백(DAY_PNL_TZ) — Windows/tzdata 미설치 환경 호환
+
