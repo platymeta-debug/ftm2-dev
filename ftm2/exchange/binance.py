@@ -618,8 +618,14 @@ class BinanceClient:
         for b in r.get("data", []):
             if b.get("asset") == "USDT":
                 wb = float(b.get("balance") or b.get("wb") or 0.0)
-                cw = float(b.get("crossWalletBalance") or b.get("cw") or 0.0)
-                return {"wallet": wb, "avail": cw}
+                # Futures /v2/balance 응답에는 availableBalance가 존재
+                avail = float(
+                    b.get("availableBalance")
+                    or b.get("cw")
+                    or b.get("crossWalletBalance")
+                    or 0.0
+                )
+                return {"wallet": wb, "avail": avail}
         raise RuntimeError("USDT_NOT_FOUND")
 
     # [ANCHOR:BINANCE_CLIENT_BAL]

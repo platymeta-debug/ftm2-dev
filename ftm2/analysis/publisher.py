@@ -84,8 +84,8 @@ class AnalysisPublisher:
                 kv = "  ".join(f"{k}:{float(v):+0.2f}" for k, v in contrib.items())
                 lines.append(f"  기여도: {kv}")
 
-        dm = (os.getenv("DATA_MODE") or "live").lower()
-        tm = (os.getenv("TRADE_MODE") or "testnet").lower()
+        dm = os.getenv("DATA_MODE", "live")
+        tm = os.getenv("TRADE_MODE", "testnet")
         lines.append(f"※ 데이터: {dm}, 트레이딩: {tm}")
 
         return "\n".join(lines)
