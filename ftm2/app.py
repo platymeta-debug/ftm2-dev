@@ -455,11 +455,11 @@ class Orchestrator:
                 log.debug("[PRICE_POLL] %s price=%s ts=%s", symbol, price, ts)
             time.sleep(interval_s)
 
-    # [ANCHOR:STRAT_ROUTE] begin
+    # [ANCHOR:ORCH_INTENT_SOURCE]
     def on_bar_close(self, sym: str, itv: str, bus) -> None:
-        from ftm2.utils.env import env_str
+        from ftm2.utils.env import env_str, env_bool
         mode = env_str("STRAT_MODE", "ensemble")
-        fallback = ""
+        dummy_enabled = env_bool("INTENT_DUMMY", False)
         intent = None
         if mode == "ensemble":
             rows = self.forecast.process_snapshot(bus.snapshot())
@@ -469,20 +469,27 @@ class Orchestrator:
                     intent = {
                         "dir": fc.get("stance", "FLAT"),
                         "score": float(fc.get("score", 0.0)),
-                        "reason": "ensemble",
+                        "reason": "ENSEMBLE",
                         "tf": itv,
                         "ts": int(r.get("T") or 0),
                     }
                     break
-        if intent is None:
+        if intent is None and dummy_enabled:
             import random, time as _t
             sc = round(random.uniform(-0.9, 0.9), 1)
             d = "LONG" if sc > 0 else "SHORT" if sc < 0 else "FLAT"
-            intent = {"dir": d, "score": float(sc), "reason": "dummy", "tf": itv, "ts": int(_t.time() * 1000)}
-            fallback = " (fallback=dummy)"
+            intent = {"dir": d, "score": float(sc), "reason": "DUMMY", "tf": itv, "ts": int(_t.time() * 1000)}
+        if intent is None:
+            return
+        if intent.get("reason") == "DUMMY" and not dummy_enabled:
+            log.debug("[INTENT] skip(dummy)")
+            return
         bus.update_intent(sym, intent)
-        log.info("[INTENT] %s %s / %.1f / reason=%s%s", sym, intent["dir"], intent["score"], intent["reason"], fallback)
-    # [ANCHOR:STRAT_ROUTE] end
+        if self.exec_router.cfg.active and getattr(self, "cli_trade", None) and getattr(self.cli_trade, "order_active", False):
+            self.exec_router.route(intent)
+        else:
+            log.info("[INTENT] %s %s / %.1f / reason=%s", sym, intent["dir"], intent["score"], intent["reason"])
+    # [ANCHOR:ORCH_INTENT_SOURCE] end
 
     def _features_loop(self, period_s: float = 0.5) -> None:
         """
@@ -835,17 +842,14 @@ class Orchestrator:
                 log.warning("[EXEC_ERR] %s", e)
             time.sleep(period_s)
 
-    # [ANCHOR:STRAT_ROUTE] begin
+    # [ANCHOR:ORCH_EXEC_TOGGLE]
     async def on_exec_toggle(self, active: bool) -> None:
         # 실행 라우터 on/off
         self.exec_router.cfg.active = bool(active)
-        # 중요: BinanceClient의 order_active도 동기화해야 실제 주문이 전송됨
-        try:
-            if hasattr(self, "cli_trade") and self.cli_trade is not None:
-                self.cli_trade.order_active = bool(active)
-        except Exception:
-            pass
-    # [ANCHOR:STRAT_ROUTE] end
+        if getattr(self, "cli_trade", None):
+            self.cli_trade.order_active = bool(active)
+        log.info("[EXEC] toggle active=%s source=PANEL", active)
+
 
     def _reconcile_loop(self, period_s: float = 0.5) -> None:
         while not self._stop.is_set():
@@ -996,18 +1000,33 @@ class Orchestrator:
                 time.sleep(period)
                 continue
             try:
-                bal = self.cli_trade.get_balance_usdt()
-                wb = float(bal.get("wallet", 0.0))
-                cw = float(bal.get("avail", 0.0))
+                snap = self.cli_trade.fetch_equity()
+                wallet = float(snap.get("wallet", 0.0))
+                avail = float(snap.get("available", 0.0))
+                equity = float(snap.get("totalMarginBalance", wallet))
+                upnl = float(snap.get("totalUnrealizedProfit", 0.0))
                 if not hasattr(self.bus, "state"):
-                    class _S: pass
+                    class _S:  # type: ignore
+                        pass
                     self.bus.state = _S()
-                self.bus.state.equity_usdt = wb
-                self.bus.set_account({"ccy": "USDT", "totalWalletBalance": wb, "availableBalance": cw})
-                log.info("[EQUITY] updated: wallet=%.2f avail=%.2f src=REST", wb, cw)
+                self.bus.state.equity_usdt = equity
+                self.bus.set_account(
+                    {
+                        "ccy": "USDT",
+                        "totalWalletBalance": wallet,
+                        "availableBalance": avail,
+                        "totalUnrealizedProfit": upnl,
+                        "totalMarginBalance": equity,
+                        "wallet": wallet,
+                        "avail": avail,
+                        "upnl": upnl,
+                        "equity": equity,
+                    }
+                )
+                log.info("[EQUITY] totalWallet=%.2f available=%.2f src=ACCOUNT", wallet, avail)
                 backoff = period
             except Exception as e:
-                log.warning("E_BAL_POLL_FAIL code=%s msg=%s backoff=%ss", getattr(e, "code", ""), getattr(e, "msg", str(e)), backoff)
+                log.warning("E_BAL_POLL_FAIL %r backoff=%s", e, backoff)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, period * 5)
                 continue
@@ -1175,10 +1194,19 @@ class Orchestrator:
         t.start()
         self._threads.append(t)
 
-        # Equity 폴링 루프 시작
-        t = threading.Thread(target=self._equity_loop, name="equity-poll", daemon=True)
-        t.start()
-        self._threads.append(t)
+        # Equity 폴링 (중복 방지)
+        if not getattr(self, "_equity_thread_started", False):
+            te = threading.Thread(target=self._equity_loop, name="equity-poll", daemon=True)
+            te.start()
+            self._threads.append(te)
+            self._equity_thread_started = True
+
+        # Positions 폴링 (중복 방지)
+        if not getattr(self, "_pos_thread_started", False):
+            tp = threading.Thread(target=self._positions_loop, name="pos-poll", daemon=True)
+            tp.start()
+            self._threads.append(tp)
+            self._pos_thread_started = True
 
         # Positions 폴링 루프 시작
         t = threading.Thread(target=self._positions_loop, name="pos-poll", daemon=True)
@@ -1191,9 +1219,10 @@ class Orchestrator:
         self._threads.append(t)
 
         # 더미 전략 루프
-        st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
-        st.start()
-        self._threads.append(st)
+        if env_bool("INTENT_DUMMY", False):
+            st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
+            st.start()
+            self._threads.append(st)
 
 
         # 하트비트 스레드

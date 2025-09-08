@@ -164,12 +164,17 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
             except Exception:
                 pass
 
+        eq_snap = snapshot.get("equity", {}) or {}
+        wallet = float(eq_snap.get("wallet", 0.0))
+        avail = float(eq_snap.get("available", 0.0))
+        port_lev = float(mon.get("portfolio_leverage", 0.0))
+
         lines += [
             "📊 **FTM2 KPI 대시보드**",
             f"{bar}",
             f"⏱️ 가동시간: **{up_min}분**",
 
-            f"💰 자본(Equity): **{_fmt(kpi.get('equity'))}**  레버리지: **{_fmt(kpi.get('lever'))}x**",
+            f"💰 자본(Equity): {wallet:,.2f}  | 사용가능: {avail:,.2f}  | 포트 레버리지: {port_lev:.2f}x",
             f"📈 포지션: {len(pos)}개  UPNL: {upnl:,.2f} USDT",
             f"📉 당일손익: **{_fmt(kpi.get('day_pnl_pct'))}%**  " + ("🛑 데일리컷" if kpi.get("day_cut") else "✅ 정상"),
             "",

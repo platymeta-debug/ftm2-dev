@@ -48,53 +48,52 @@ class AnalysisPublisher:
         self._msg = msg
         return msg
 
-    # [ANCHOR:ANALYSIS_PUBLISHER] begin
+    # [ANCHOR:ANALYSIS_PUBLISHER]
     def _render(self, snap: dict) -> str:
-        import math, os, time
-        marks: dict = snap.get("marks", {}) or {}
-        feats: dict = snap.get("features", {}) or {}
-        regimes: dict = snap.get("regimes", {}) or {}
-        fcs: dict = snap.get("forecasts", {}) or {}
-        syms = snap.get("symbols") or sorted(marks.keys()) or ["BTCUSDT","ETHUSDT"]
-        t = time.strftime("%H:%M:%S", time.gmtime(int(snap.get("now_ts", 0))/1000))
+        import time, os
+        marks = snap.get("marks", {}) or {}
+        feats = snap.get("features", {}) or {}
+        regimes = snap.get("regimes", {}) or {}
+        fcs = snap.get("forecasts", {}) or {}
+        syms = snap.get("symbols") or sorted(marks.keys()) or ["BTCUSDT", "ETHUSDT"]
+        tfs = ("5m", "15m", "1h", "4h")
+        t = time.strftime("%H:%M:%S", time.gmtime(int(snap.get("now_ts", 0)) / 1000))
         lines = [f"🧠 실시간 분석 리포트 ({t} UTC)"]
 
-        tfs = ("5m","15m","1h","4h")
-        arrow = {"LONG":"⬆","SHORT":"⬇","FLAT":"→"}
-
-        def _feat_snip(s, tf):
-            d = feats.get((s, tf)) or {}
-            emaf = float(d.get("ema_fast",0.0)); emas = float(d.get("ema_slow",1e-12)) or 1e-12
-            ema_spread = (emaf - emas) / (emas if emas != 0.0 else 1e-12)
-            rv_pr = float(d.get("rv_pr", 0.0))
-            atr = float(d.get("atr14", 0.0))
-            return f"ema={ema_spread:+.5f}  rv%={rv_pr:.3f}  atr={atr:.2f}"
-
-        def _comp_snip(fc):
-            ex = (fc or {}).get("explain") or {}
-            return ("모멘텀:{:+.2f}  평균회귀:{:+.2f}  돌파:{:+.2f}"
-                    .format(float(ex.get('mom',0.0)), float(ex.get('meanrev',0.0)), float(ex.get('breakout',0.0))))
+        def feat(s: str, tf: str):
+            f = feats.get((s, tf)) or {}
+            r = regimes.get((s, tf)) or {}
+            ema = float(r.get("ema", 0.0))
+            rv20 = float(f.get("rv20", 0.0))
+            atr = float(f.get("atr", 0.0))
+            ret1 = float(f.get("ret1", 0.0)) * 100.0
+            rv_pct = float(r.get("rv_pr", 0.0))
+            return ema, rv20, atr, ret1, rv_pct
 
         for s in syms:
-            parts = []
+            lines.append(f"[{s}]")
             for tf in tfs:
                 fc = fcs.get((s, tf)) or {}
-                rcode = (regimes.get((s, tf)) or {}).get("code","")
-                sc = float(fc.get("score",0.0))
-                pup = float(fc.get("prob_up") or fc.get("p_up") or 0.5)
+                sc = float(fc.get("score", 0.0))
+                pup = float(fc.get("p_up") or fc.get("prob_up") or 0.5)
                 stance = (fc.get("stance") or "FLAT").upper()
-                em = arrow.get(stance,"→")
-                parts.append(f"{tf}: {sc:+.2f}({em}, r={rcode}, p_up={pup:.2f})")
-            lines.append(f"• {s} — " + " | ".join(parts))
-            # 가장 짧은 TF 기준으로 특성/기여 표기
-            fc0 = fcs.get((s, tfs[0])) or {}
-            lines.append("  - 특성: " + _feat_snip(s, tfs[0]))
-            lines.append("  - 기여도: " + _comp_snip(fc0))
+                rcode = (regimes.get((s, tf)) or {}).get("code", "")
+                arrow = "⬆" if stance == "LONG" else ("⬇" if stance == "SHORT" else "→")
+                lines.append(f"  {tf:<3}  점수 {sc:+.2f} | 방향 {arrow} | p_up {pup:.2f} | 레짐 {rcode}")
+                ema, rv20, atr, ret1, rv_pct = feat(s, tf)
+                lines.append(
+                    f"      지표: EMA {ema:+.5f} | RV20 {rv20:.2%} | ATR {atr:.2f} | RET1 {ret1:+.3f}% | RV%tile {rv_pct:.3f}"
+                )
+                ex = (fc.get("explain") or {})
+                lines.append(
+                    f"      기여도: 모멘텀 {float(ex.get('mom',0.0)):+.2f} / 평균회귀 {float(ex.get('meanrev',0.0)):+.2f} / 돌파 {float(ex.get('breakout',0.0)):+.2f}"
+                )
+            lines.append("")
 
-        # 모드 푸터 동적 반영
         dm = (os.getenv("DATA_MODE") or "live").lower()
-        tm = (os.getenv("TRADE_MODE") or "auto").lower()
-        lines.append(f"※ 데이터: {dm}, 트레이딩: {tm}")
+        tm = (os.getenv("TRADE_MODE") or "testnet").lower()
+        lines.append(f"※ 데이터: {dm} | 트레이딩: {tm}")
+
         return "\n".join(lines)
     # [ANCHOR:ANALYSIS_PUBLISHER] end
 
