@@ -164,12 +164,16 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
             except Exception:
                 pass
 
+        acct = snapshot.get("account") or {}
+        equity_val = float((kpi and kpi.get("equity")) or acct.get("totalMarginBalance") or acct.get("equity") or 0.0)
+        available_val = float(acct.get("availableBalance") or acct.get("avail") or 0.0)
+
         lines += [
             "📊 **FTM2 KPI 대시보드**",
             f"{bar}",
             f"⏱️ 가동시간: **{up_min}분**",
 
-            f"💰 자본(Equity): **{_fmt(kpi.get('equity'))}**  레버리지: **{_fmt(kpi.get('lever'))}x**",
+            f"💰 자본(Equity): **{_fmt(equity_val)}**  | 사용가능: **{_fmt(available_val)}**  | 포트 레버리지: **{_fmt(kpi.get('lever') if kpi else 0)}x**",
             f"📈 포지션: {len(pos)}개  UPNL: {upnl:,.2f} USDT",
             f"📉 당일손익: **{_fmt(kpi.get('day_pnl_pct'))}%**  " + ("🛑 데일리컷" if kpi.get("day_cut") else "✅ 정상"),
             "",
@@ -185,6 +189,23 @@ def render_dashboard(snapshot: Dict[str, Any]) -> str:
             f"{bar}",
             "",
         ]
+    # 포지션 상세(있을 때만)
+    pos = snapshot.get("positions") or {}
+    if pos:
+        lines.append("📦 포지션 상세")
+        marks = snapshot.get("marks") or {}
+        for s, p in pos.items():
+            qty = float(p.get("pa") or 0.0)
+            if abs(qty) < 1e-12:
+                continue
+            side = "LONG" if qty > 0 else "SHORT"
+            ep = float(p.get("ep") or 0.0)
+            mk = float((marks.get(s) or {}).get("price") or 0.0)
+            up = float(p.get("up") or 0.0)
+            lev = float(p.get("lev") or p.get("leverage") or 0.0)
+            lines.append(f"  • {s} {side}  {qty:.6f} @ {ep:,.2f}  | mark {mk:,.2f}  UPNL {up:,.2f}  lev {lev:g}x")
+        lines.append("")
+
     # 마크프라이스 요약(기존 로직 유지)
     marks = snapshot.get("marks") or {}
     if marks:

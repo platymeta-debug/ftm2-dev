@@ -48,29 +48,45 @@ class AnalysisPublisher:
         self._msg = msg
         return msg
 
-    # [ANCHOR:ANALYSIS_PUBLISHER] begin
+    # [ANCHOR:ANALYSIS_PUBLISHER]
     def _render(self, snap: dict) -> str:
-        marks: dict = snap.get("marks", {}) or {}
+        marks = snap.get("marks") or {}
+        regimes = snap.get("regimes") or {}
+        forecasts = snap.get("forecasts") or {}
+        feats = snap.get("features") or {}
+
         syms = getattr(self.bot.bus, "symbols", None) or snap.get("symbols") or sorted(marks.keys())
-        regimes = snap.get("regimes", {}) or {}
-        intents = snap.get("intents", {}) or snap.get("forecast", {}) or snap.get("signals", {}) or {}
         t = time.strftime("%H:%M:%S", time.gmtime(int(snap.get("now_ts", 0)) / 1000))
         lines = [f"🧠 실시간 분석 리포트 ({t} UTC)"]
         arrow = {"LONG": "⬆", "SHORT": "⬇", "FLAT": "→"}
         tfs = ("5m", "15m", "1h", "4h")
+
+        def _one(sym: str, tf: str) -> str:
+            fc = forecasts.get((sym, tf), {}) or {}
+            rg = regimes.get((sym, tf), {}) or {}
+            ft = feats.get((sym, tf), {}) or {}
+            sc = float(fc.get("score") or 0.0)
+            pu = float(fc.get("prob_up") or fc.get("p_up") or 0.5)
+            st = (fc.get("stance") or "FLAT").upper()
+            em = arrow.get(st, "→")
+            rgl = rg.get("label") or (rg.get("code") or "FLAT")
+            atr = float(ft.get("atr14") or 0.0)
+            rv = float(ft.get("rv20") or rg.get("rv_pr") or 0.0)
+            ema = float(ft.get("ema_spread") or rg.get("ema_spread") or 0.0)
+            return f"{tf}: {sc:+.2f}({em}, r={rgl}, p_up={pu:.2f}, atr={atr:.2f}, rv={rv:.3f}, ema={ema:+.5f})"
+
         for s in syms:
-            intent = intents.get(s, {})
-            score = float(intent.get("score", 0.0)) if isinstance(intent, dict) else 0.0
-            direction = intent.get("dir") or intent.get("stance") or intent.get("side") or "FLAT"
-            em = arrow.get(str(direction).upper(), "→")
-            dots = []
-            for tf in tfs:
-                dot = "●" if regimes.get((s, tf)) or intent.get(tf) else "·"
-                dots.append(f"{tf}:{dot}")
-            lines.append(
-                f"• {s} — {' | '.join(dots)} | 점수:{score:+.1f} / 방향:{em}"
-            )
-        lines.append("※ 데이터: live, 트레이딩: testnet")
+            parts = [_one(s, tf) for tf in tfs]
+            lines.append(f"• {s} — " + " | ".join(parts))
+
+            contrib = forecasts.get((s, tfs[0]), {}).get("contrib")
+            if isinstance(contrib, dict) and contrib:
+                kv = "  ".join(f"{k}:{float(v):+0.2f}" for k, v in contrib.items())
+                lines.append(f"  기여도: {kv}")
+
+        dm = (os.getenv("DATA_MODE") or "live").lower()
+        tm = (os.getenv("TRADE_MODE") or "testnet").lower()
+        lines.append(f"※ 데이터: {dm}, 트레이딩: {tm}")
         return "\n".join(lines)
     # [ANCHOR:ANALYSIS_PUBLISHER] end
 

@@ -71,7 +71,14 @@ class KPIReporter:
         up_s = max(0, (now - boot)//1000)
 
         risk = snapshot.get("risk") or {}
-        equity = float(risk.get("equity") or 0.0)
+        acct = snapshot.get("account") or {}
+        equity = float(
+            (risk.get("equity"))
+            or (acct.get("totalMarginBalance"))
+            or (acct.get("totalWalletBalance"))
+            or 0.0
+        )
+        available = float(acct.get("availableBalance") or acct.get("avail") or 0.0)
         day_pnl_pct = float(risk.get("day_pnl_pct") or 0.0)
         day_cut = bool(risk.get("day_cut"))
 
@@ -105,6 +112,7 @@ class KPIReporter:
         kpi = {
             "uptime_s": up_s,
             "equity": equity,
+            "available": available,
             "lever": lever,
             "day_pnl_pct": day_pnl_pct,
             "day_cut": day_cut,
@@ -158,12 +166,13 @@ class KPIReporter:
         # 한국어 대시보드 텍스트(한눈에)
         up_min = kpi["uptime_s"] // 60
         reg = kpi["regimes"]; fc = kpi["forecast"]; eq = kpi["exec_quality"]; ol = kpi["order_ledger"]
-        bar = "─"*34
+        bar = "─" * 34
+        available = kpi.get("available", 0.0)
         return (
- f"""📊 **FTM2 KPI 대시보드**
+            f"""📊 **FTM2 KPI 대시보드**
 {bar}
 ⏱️ 가동시간: **{up_min}분**
-💰 자본(Equity): **{kpi['equity']:.2f}**  레버리지: **{kpi['lever']:.2f}x**
+💰 자본(Equity): **{kpi['equity']:.2f}**  사용가능: **{available:.2f}**  레버리지: **{kpi['lever']:.2f}x**
 📉 당일손익: **{kpi['day_pnl_pct']:.2f}%**  {'🛑 데일리컷 발동' if kpi['day_cut'] else '✅ 정상'}
 
 📐 익스포저: 롱 {self._fmt_pct(kpi['used_long'],1)} / 숏 {self._fmt_pct(kpi['used_short'],1)}
