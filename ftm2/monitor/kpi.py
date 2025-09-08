@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Tuple
+import time
+from ftm2.db.core import get_conn
 
 
 # [ANCHOR:KPI_REPORTER]
@@ -74,6 +76,32 @@ def compute_kpi_snapshot(state) -> Dict:
             total_notional += abs(float(pos.get("positionAmt") or 0.0)) * px
     port_lev = total_notional / max(equity, 1e-9)
 
+    def _amt_stats() -> Dict:
+        try:
+            conn = get_conn()
+            now = time.time()
+            rows = conn.execute("SELECT id, readiness, created_ts FROM tickets WHERE created_ts>=?", (now-3600,)).fetchall()
+            total = len(rows)
+            ready_cnt = sum(1 for r in rows if (r[1] or "").upper() == "READY")
+            exec_cnt = 0
+            ttf_ms = 0.0
+            for r in rows:
+                oid = conn.execute("SELECT ts_filled FROM orders WHERE link_id=? AND ts_filled IS NOT NULL ORDER BY ts_filled ASC LIMIT 1", (r[0],)).fetchone()
+                if oid and oid[0]:
+                    exec_cnt += 1
+                    try:
+                        ttf_ms += max(0, int(oid[0]) - int(float(r[2]) * 1000))
+                    except Exception:
+                        pass
+            return {
+                "count": total,
+                "ready_rate": (ready_cnt/total*100.0) if total else 0.0,
+                "exec_rate": (exec_cnt/total*100.0) if total else 0.0,
+                "avg_ttf_ms": (ttf_ms/exec_cnt) if exec_cnt else 0.0,
+            }
+        except Exception:
+            return {"count":0,"ready_rate":0.0,"exec_rate":0.0,"avg_ttf_ms":0.0}
+
     kpi = {
         "equity": equity,
         "day_pnl_pct": day_pnl_pct,
@@ -86,6 +114,7 @@ def compute_kpi_snapshot(state) -> Dict:
             "short_target": s_t,
         },
         "port_leverage": port_lev,
+        "amt": _amt_stats(),
     }
     mon["kpi"] = kpi
     state.set_monitor_state(mon)

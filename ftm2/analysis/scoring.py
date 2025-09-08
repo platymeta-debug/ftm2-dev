@@ -5,6 +5,7 @@
 from dataclasses import dataclass, asdict
 from typing import Dict, Tuple, List
 import os, math, time
+from ftm2.config.aggr import load_aggr_profile
 
 
 @dataclass
@@ -81,30 +82,27 @@ def _dir_from_stance(stance: str) -> str:
 
 
 
-def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[str]]:
+def _gate_checks(state, regime, rv_pr: float, prof: dict):
     ok, block = {}, []
-    reg = _norm_regime(regime)
-    reg_head = reg.split("_")[0].lower()
-    allow = {x.lower() for x in _env_strs("REGIME_ALLOW", "trend,range,flat")}
-    reg_ok = reg_head in allow
-
+    reg = _norm_regime(regime).split("_")[0].lower()
+    allow = {x.lower() for x in prof["REGIME_ALLOW"]}
+    reg_ok = (reg in allow) or (prof.get("ALLOW_FLAT") and reg == "flat")
     ok["regime_ok"] = reg_ok
     if not reg_ok:
         block.append("regime")
 
-    low, high = _env_floats("RV_PCTL_BAND", "0.15,0.85")
-    rv_ok = (rv_pr is not None) and (low <= rv_pr <= high)
+    lo, hi = prof["RV_BAND"]
+    rv_ok = (rv_pr is not None) and (lo <= rv_pr <= hi)
     ok["rv_band_ok"] = rv_ok
     if not rv_ok:
         block.append("rv_band")
 
-
-    risk_room = float(getattr(state, "risk", {}).get("room", 1.0)) if hasattr(state, "risk") else 1.0
-    ok["risk_ok"] = risk_room > 0.0
+    risk_room = float(getattr(getattr(state, "risk", {}), "get", lambda *_: 1.0)("room", 1.0)) if hasattr(state, "risk") else 1.0
+    ok["risk_ok"] = (risk_room > 0)
     ok["risk_room"] = risk_room
 
-    cd_left = int(getattr(state, "cooldown", {}).get("sec_left", 0)) if hasattr(state, "cooldown") else 0
-    ok["cooldown_ok"] = cd_left <= 0
+    cd_left = int(getattr(getattr(state, "cooldown", {}), "get", lambda *_: 0)("sec_left", 0)) if hasattr(state, "cooldown") else 0
+    ok["cooldown_ok"] = (cd_left <= 0)
     ok["cooldown_s"] = max(0, cd_left)
     if cd_left > 0:
         block.append("cooldown")
@@ -112,14 +110,12 @@ def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[st
     return ok, block
 
 
-def _readiness(score: float, p_up: float, gates_ok: Dict, blockers: List[str]) -> Dict:
-    open_th = float(os.getenv("OPEN_TH", "20"))
-    pup_th = float(os.getenv("PUP_TH", "0.56"))
-    if all([gates_ok.get("regime_ok"), gates_ok.get("rv_band_ok"), gates_ok.get("risk_ok"), gates_ok.get("cooldown_ok")]) and score >= open_th and p_up >= pup_th:
-        return {"level": "READY", "blockers": [], "since_s": 0}
-    if len(blockers) == 0 and (score >= open_th * 0.5):
-        return {"level": "CANDIDATE", "blockers": [], "since_s": 0}
-    return {"level": "SCOUT", "blockers": blockers, "since_s": 0}
+def _readiness(score: float, p_up: float, gates_ok: dict, blockers: list, prof: dict) -> dict:
+    if not blockers and score >= prof["OPEN_TH"] and p_up >= prof["PUP_TH"]:
+        return {"level": "READY", "blockers": []}
+    if score >= prof["OPEN_TH"] * 0.5:
+        return {"level": "CANDIDATE", "blockers": blockers}
+    return {"level": "SCOUT", "blockers": blockers}
 
 
 def _plan_preview(state, symbol: str, price: float) -> Dict:
@@ -170,8 +166,9 @@ def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> Sc
         except Exception:
             contrib["forecast"] = 0.0
 
-    gates_ok, blockers = _gate_checks(state, regime, rv_pr)
-    ready = _readiness(score, p_up, gates_ok, blockers)
+    prof = load_aggr_profile(state)
+    gates_ok, blockers = _gate_checks(state, regime, rv_pr, prof)
+    ready = _readiness(score, p_up, gates_ok, blockers, prof)
     price = state.marks.get(symbol)
     plan = _plan_preview(state, symbol, price)
 

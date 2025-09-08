@@ -159,3 +159,11 @@
 - feat(analysis): Forecast 오버라이드(점수/방향/p_up) + 레짐/RV 폴백 강화
 - feat(exec): 실행 동기화 가시 로그(READ/SEND/RSLT 요약)와 틱 로그 추가
 - feat(log): FEATURES 백필 감지 기반 샘플링/요약 로깅
+
+2025-09-08 v0.7.0
+- feat(ticket): AMT(Analysis-to-Market Ticket) 도입 — 분석↔실행 단일 파이프
+- feat(config): AGGR_LEVEL(1..10) 프로파일 매핑(임계/리스크/쿨다운/레짐/RV/TP/SL)
+- feat(exec): 라우터 AMT 소비 경로 추가([EXEC.AMT] 로그) 및 DB 저장
+- feat(ui): 디스코드 AMT 렌더(READY 시 실행계획/레벨 노출)
+- feat(kpi): AMT 발행→실행 전환율 집계
+- deprecate: 구 intent/target 경로(경고 로그, 한 버전 후 제거)
