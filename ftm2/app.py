@@ -844,10 +844,12 @@ class Orchestrator:
 
     # [ANCHOR:ORCH_EXEC_TOGGLE]
     async def on_exec_toggle(self, active: bool) -> None:
+        # 실행 라우터 on/off
         self.exec_router.cfg.active = bool(active)
         if getattr(self, "cli_trade", None):
             self.cli_trade.order_active = bool(active)
         log.info("[EXEC] toggle active=%s source=PANEL", active)
+
 
     def _reconcile_loop(self, period_s: float = 0.5) -> None:
         while not self._stop.is_set():
@@ -1028,7 +1030,7 @@ class Orchestrator:
                 time.sleep(backoff)
                 backoff = min(backoff * 2, period * 5)
                 continue
-            time.sleep(period)
+        time.sleep(period)
     # [ANCHOR:ORCH_EQUITY_LOOP] end
 
     def _positions_loop(self, period_s: int | None = None) -> None:
@@ -1205,6 +1207,11 @@ class Orchestrator:
             tp.start()
             self._threads.append(tp)
             self._pos_thread_started = True
+
+        # Positions 폴링 루프 시작
+        t = threading.Thread(target=self._positions_loop, name="pos-poll", daemon=True)
+        t.start()
+        self._threads.append(t)
 
         # 설정 핫리로드
         t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
