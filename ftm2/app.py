@@ -567,7 +567,7 @@ class Orchestrator:
         닫힌 봉을 감지해 피처 계산 후 StateBus에 갱신.
         """
         while not self._stop.is_set():
-            snap = self.bus.snapshot()
+            snap = self.bus.export_snapshot() if hasattr(self.bus, "export_snapshot") else self.bus.snapshot()
             rows = self.feature_engine.process_snapshot(snap)
             for r in rows:
                 self.bus.update_features(r["symbol"], r["interval"], r["features"])
@@ -580,7 +580,7 @@ class Orchestrator:
         닫힌 봉 기반 피처에서 레짐을 산출하고, 변경 시만 StateBus/알림을 갱신한다.
         """
         while not self._stop.is_set():
-            snap = self.bus.snapshot()
+            snap = self.bus.export_snapshot() if hasattr(self.bus, "export_snapshot") else self.bus.snapshot()
             changes = self.regime.process_snapshot(snap)
             for chg in changes:
                 sym = chg["symbol"]
@@ -868,7 +868,7 @@ class Orchestrator:
         RiskEngine이 계산한 targets를 소비하여 주문(또는 드라이런)을 수행.
         """
         while not self._stop.is_set():
-            snap = self.bus.snapshot()
+            snap = self.bus.export_snapshot() if hasattr(self.bus, "export_snapshot") else self.bus.snapshot()
             # [ANCHOR:STRAT_ROUTE] begin
             if not is_exec_enabled(self.bus):
                 log.info("[EXEC] disabled (source=PANEL|ENV)")
@@ -876,6 +876,13 @@ class Orchestrator:
                 continue
             # [ANCHOR:STRAT_ROUTE] end
             try:
+                intents = snap.get("intents") or {}
+                n_int = (
+                    sum(len(v) for v in intents.values())
+                    if isinstance(intents, dict)
+                    else (len(intents) if intents else 0)
+                )
+                log.info(f"[EXEC.SYNC] intents={n_int} (tick)")
                 res = self.exec_router.sync(snap)
                 for r in res:
                     msg = (
@@ -905,7 +912,7 @@ class Orchestrator:
                     except Exception:
                         pass
             except Exception as e:
-                log.warning("[EXEC_ERR] %s", e)
+                log.warning(f"[EXEC.SYNC][WARN] {e}")
             time.sleep(period_s)
 
     # [ANCHOR:ORCH_EXEC_TOGGLE]
