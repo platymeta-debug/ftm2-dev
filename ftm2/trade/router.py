@@ -44,6 +44,7 @@ class OrderRouter:
         self._last_sent_ms: Dict[str, int] = {}  # sym -> epoch_ms
         self._meta: Dict[str, Dict[str, float]] = {}  # sym -> {step,min_notional}
         self._warm = False
+        self.log = log
 
     # ---- exchange meta ----
     def _ensure_meta(self, symbols: List[str]) -> None:
@@ -100,12 +101,27 @@ class OrderRouter:
         return False
 
     def sync(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        intents = snapshot.get("intents") or {}
+        open_orders = snapshot.get("open_orders") or {}
+        positions = snapshot.get("positions") or {}
+        n_int = (
+            sum(len(v) for v in intents.values())
+            if isinstance(intents, dict)
+            else (len(intents) if intents else 0)
+        )
+        n_pos = len([
+            p for p in positions.values()
+            if getattr(p, "positionAmt", 0) or (isinstance(p, dict) and float(p.get("positionAmt", 0)) != 0)
+        ])
+        self.log.info(
+            f"[EXEC.SYNC] read intents={n_int} positions={n_pos} oo={len(open_orders) if isinstance(open_orders, dict) else 0}"
+        )
+
         symbols = list((snapshot.get("targets") or {}).keys())
         if not symbols:
             return []
         self._ensure_meta(symbols)
 
-        positions = snapshot.get("positions") or {}
         marks = snapshot.get("marks") or {}
         targets = snapshot.get("targets") or {}
 
@@ -117,6 +133,7 @@ class OrderRouter:
             delta = target_qty - pos
 
             if self._too_soon(sym):
+                self.log.info(f"[EXEC.DROP] %s reason=COOLDOWN", sym)
                 results.append({
                     "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
                     "price": price, "reason": "COOLDOWN", "mode": "DRY" if not self.cfg.active else "LIVE",
@@ -125,6 +142,7 @@ class OrderRouter:
                 continue
 
             if self._skip_tolerance(delta, target_qty):
+                self.log.info(f"[EXEC.DROP] %s reason=TOL", sym)
                 results.append({
                     "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
                     "price": price, "reason": "TOL", "mode": "DRY" if not self.cfg.active else "LIVE",
@@ -140,6 +158,7 @@ class OrderRouter:
             notional = qty * price
 
             if qty <= 0.0:
+                self.log.info(f"[EXEC.DROP] %s reason=STEP_ZERO", sym)
                 results.append({
                     "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
                     "price": price, "reason": "STEP_ZERO", "mode": "DRY" if not self.cfg.active else "LIVE",
@@ -147,6 +166,7 @@ class OrderRouter:
                 })
                 continue
             if price <= 0.0 or notional < min_notional:
+                self.log.info(f"[EXEC.DROP] %s reason=MIN_NOTIONAL", sym)
                 results.append({
                     "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
                     "price": price, "reason": "MIN_NOTIONAL", "mode": "DRY" if not self.cfg.active else "LIVE",
@@ -170,7 +190,7 @@ class OrderRouter:
 
             mode = "LIVE" if self.cfg.active else "DRY"
             if not self.cfg.active:
-                log.info("[EXEC_DRY] %s %s qty=%s reason=PLAN", sym, side, payload["quantity"])
+                self.log.info("[EXEC.SEND] %s %s qty=%s px=~%g reason=DRY", sym, side, payload["quantity"], price)
                 self._last_sent_ms[sym] = int(time.time() * 1000)
                 results.append({
                     "symbol": sym, "side": side, "delta_qty": delta, "qty_sent": qty,
@@ -181,15 +201,24 @@ class OrderRouter:
             # 실주문: BinanceClient 가 order_active=False 면 스텁에러가 온다 → 그대로 노출
             r = self.cli.create_order(payload)
             if r.get("ok"):
-                log.info("[EXEC] %s %s qty=%s @~%g", sym, side, payload["quantity"], price)
+                self.log.info("[EXEC.SEND] %s %s qty=%s px=~%g", sym, side, payload["quantity"], price)
                 self._last_sent_ms[sym] = int(time.time() * 1000)
             else:
-                log.warning("[EXEC_ERR] %s %s %s", sym, side, r.get("error"))
+                self.log.warning("[EXEC_ERR] %s %s %s", sym, side, r.get("error"))
             results.append({
                 "symbol": sym, "side": side, "delta_qty": delta, "qty_sent": qty,
                 "price": price, "reason": "SENT" if r.get("ok") else "ERR",
                 "mode": mode, "result": r
             })
+            try:
+                oid = (r.get("data") or {}).get("orderId") or (r.get("orderId"))
+                status = (r.get("data") or {}).get("status") or r.get("status")
+                filled = (r.get("data") or {}).get("executedQty") or r.get("executedQty")
+                self.log.info(
+                    f"[EXEC.RSLT] %s %s status=%s filled=%s", sym, oid, status, filled
+                )
+            except Exception:
+                pass
         return results
 
     def last_sent_ms(self, sym: str) -> Optional[int]:

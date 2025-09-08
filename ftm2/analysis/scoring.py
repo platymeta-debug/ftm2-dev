@@ -56,19 +56,28 @@ def _score_from_contrib(c: Dict) -> float:
 
 
 
-# [ADD] Regime normalizer
+# [ADD] 정규화 유틸
 def _norm_regime(regime) -> str:
-    """dict/None/str 혼용 입력을 안전한 문자열 코드로 정규화"""
     if isinstance(regime, dict):
         for k in ("code", "name", "state", "label", "value"):
-
             v = regime.get(k)
             if isinstance(v, str):
                 return v
-        return str(regime)
+        return "N/A"
     if regime is None:
-        return ""
+        return "N/A"
     return str(regime)
+
+
+def _dir_from_stance(stance: str) -> str:
+    if not stance:
+        return "FLAT"
+    s = stance.lower()
+    if "long" in s or "up" in s or s in ("bull", "buy"):
+        return "LONG"
+    if "short" in s or "down" in s or s in ("bear", "sell"):
+        return "SHORT"
+    return "FLAT"
 
 
 
@@ -76,7 +85,7 @@ def _gate_checks(state, regime: str | dict, rv_pr: float) -> Tuple[Dict, List[st
     ok, block = {}, []
     reg = _norm_regime(regime)
     reg_head = reg.split("_")[0].lower()
-    allow = {x.lower() for x in _env_strs("REGIME_ALLOW", "trend,range")}
+    allow = {x.lower() for x in _env_strs("REGIME_ALLOW", "trend,range,flat")}
     reg_ok = reg_head in allow
 
     ok["regime_ok"] = reg_ok
@@ -129,7 +138,7 @@ def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> Sc
     # rv_pr 폴백: feats → regime.dict
     rv_pr = feats.get("rv_pr")
     if rv_pr is None and isinstance(regime, dict):
-        rv_pr = regime.get("rv_pr") or regime.get("rvp")
+        rv_pr = regime.get("rv_pr") or regime.get("rvp") or regime.get("rv_pctile")
 
     ema, rv20, atr, ret1 = feats.get("ema"), feats.get("rv20"), feats.get("atr"), feats.get("ret1")
 
@@ -139,12 +148,34 @@ def compute_score_detail(state, symbol: str, tf: str, regime, feats: Dict) -> Sc
     # p_up 간이 캘리브레이션: 스코어 시그넘 기반
     p_up = 0.50 + 0.10 * (1 if score > 0 else (-1 if score < 0 else 0))
 
+    # --- Forecast 오버라이드(있으면 최우선 사용)
+    fc = None
+    if hasattr(state, "forecasts"):
+        fc = state.forecasts.get((symbol, tf)) or state.forecasts.get(symbol, {}).get(tf)
+    if fc:
+        if "score" in fc:
+            try:
+                score = float(fc["score"]) * 100.0
+            except Exception:
+                pass
+        if "p_up" in fc:
+            try:
+                p_up = float(fc["p_up"])
+            except Exception:
+                pass
+        if "stance" in fc:
+            direction = _dir_from_stance(fc["stance"])
+        try:
+            contrib["forecast"] = round(float(fc.get("score", 0.0)) * 100.0, 2)
+        except Exception:
+            contrib["forecast"] = 0.0
+
     gates_ok, blockers = _gate_checks(state, regime, rv_pr)
     ready = _readiness(score, p_up, gates_ok, blockers)
     price = state.marks.get(symbol)
     plan = _plan_preview(state, symbol, price)
 
-    regime_str = _norm_regime(regime) or "N/A"
+    regime_str = _norm_regime(regime)
 
     return ScoreDetail(
         symbol=symbol,

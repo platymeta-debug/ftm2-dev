@@ -25,26 +25,35 @@ if not log.handlers:
 _feat_count: Dict[Tuple[str, str], int] = {}
 
 
-def _should_log_features(symbol: str, tf: str, i: int, total: int) -> bool:
-    mode = os.getenv("FEATURES_LOG_MODE", "sample").lower()
-    if mode == "off":
-        return False
-    if mode == "all":
+def _is_backfill(ret1, rv20, atr, idx, total):
+    if total and total >= 200:
         return True
-    step = max(1, int(os.getenv("FEATURES_LOG_SAMPLE_N", "50")))
-    return i == 0 or i == total - 1 or (i % step == 0)
+    if (rv20 is None or atr is None):
+        return True
+    return (abs(rv20) < 1e-12 and abs(atr) < 1e-12 and idx < 5)
 
 
 def log_features(logger, symbol: str, tf: str, i: int, total: int, T: int, ret1: float, rv20: float, atr: float) -> None:
-    if _should_log_features(symbol, tf, i, total):
-        logger.info(
-            f"[FEATURES] {symbol} {tf} T={T} ret1={ret1:+.5f} rv20={rv20:.5f} atr={atr:.5f}"
-        )
-    elif i == total - 1:
-        skipped = max(0, total - (total // max(1, int(os.getenv("FEATURES_LOG_SAMPLE_N", "50")))) - 2)
-        if skipped > 0:
+    mode = os.getenv("FEATURES_LOG_MODE", "sample").lower()
+    if mode == "off":
+        if i == total - 1:
+            logger.info(f"[FEATURES][SUMMARY] {symbol} {tf} warmup {total} bars (log=off)")
+        return
+    step = max(1, int(os.getenv("FEATURES_LOG_SAMPLE_N", "80")))
+    backfill = _is_backfill(ret1, rv20, atr, i, total)
+    if backfill:
+        if i in (0, total - 1) or (i % step == 0):
             logger.info(
-                f"[FEATURES][SUMMARY] {symbol} {tf} warmup {total} bars (logged sampled, skipped ~{skipped})"
+                f"[FEATURES] {symbol} {tf} T={T} ret1={ret1:+.5f} rv20={rv20:.5f} atr={atr:.5f} (warmup)"
+            )
+        elif i == total - 1:
+            logger.info(
+                f"[FEATURES][SUMMARY] {symbol} {tf} warmup {total} bars (sampled)"
+            )
+    else:
+        if i == total - 1 or (i % step == 0):
+            logger.info(
+                f"[FEATURES] {symbol} {tf} T={T} ret1={ret1:+.5f} rv20={rv20:.5f} atr={atr:.5f}"
             )
 # [ANCHOR:FEATURES_LOG] end
 

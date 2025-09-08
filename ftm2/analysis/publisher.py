@@ -85,6 +85,15 @@ class AnalysisPublisher:
                 "asof": f.get("asof") or snap.get("now_ts"),
             }
         state.compute_features = _compute_features
+        # forecasts는 (sym, tf) 튜플 키 또는 중첩 dict일 수 있음 → 둘 다 지원
+        fmap = snap.get("forecasts") or {}
+        state.forecasts = {}
+        for k, v in fmap.items():
+            if isinstance(k, tuple) and len(k) == 2:
+                state.forecasts[k] = v
+            elif isinstance(k, str) and isinstance(v, dict):
+                for tf_, fc in v.items():
+                    state.forecasts[(k, tf_)] = fc
         # equity (플랜 미리보기에 사용)
         mon = snap.get("monitor") or {}
         kpi = mon.get("kpi") or {}
@@ -93,6 +102,7 @@ class AnalysisPublisher:
         # 보조 헬퍼
         state.latency_ms = lambda _sym: 0
         state.now_iso_utc = lambda : time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(snap.get("now_ts",0))/1000))
+        state.now_iso = state.now_iso_utc
         state.trade_mode = os.getenv("TRADE_MODE", "testnet")
 
         # --- 심볼 목록 ---
