@@ -645,6 +645,31 @@ class BinanceClient:
             return None
 
 
+    # [ANCHOR:BINANCE_CLIENT] fetch_equity 정확화
+    def fetch_equity(self) -> dict:
+        """
+        Futures ACCOUNT를 기준으로 Equity/Available을 산출한다.
+        - endpoint: GET /fapi/v2/account  (testnet/live 베이스URL 자동)
+        반환: {"wallet", "available", "totalMarginBalance", "totalUnrealizedProfit", "ts"}
+        """
+        r = self._http_request("GET", "/v2/account", params={"recvWindow": 30000}, signed=True)
+        if not r.get("ok"):
+            raise RuntimeError("E_FETCH_EQUITY")
+        d = r.get("data") or {}
+        ts = int(time.time() * 1000)
+        t_wallet = float(d.get("totalWalletBalance") or 0.0)
+        t_margin = float(d.get("totalMarginBalance") or 0.0)
+        t_upnl = float(d.get("totalUnrealizedProfit") or 0.0)
+        avail = float(d.get("availableBalance") or 0.0)
+        snap = {
+            "wallet": t_wallet,
+            "available": avail,
+            "totalMarginBalance": t_margin,
+            "totalUnrealizedProfit": t_upnl,
+            "ts": ts,
+        }
+        return snap
+
     # --- 계정 스냅샷 ---------------------------------------------------
     def account_snapshot(self) -> Dict[str, Any]:
         """/fapi/v2/account에서 잔고/포지션을 한 번에 가져온다."""
