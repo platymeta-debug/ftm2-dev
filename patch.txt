@@ -155,3 +155,7 @@
 - feat(ui): 하트비트에 exec=on/off 노출, 컨트롤패널 토글 시 [CTRL] 로그 출력
 - tweak(analysis-report): 렌더에서 레짐/RV%tile 안전 표기(딕트 노출 방지)
 
+2025-09-08 v0.6.7
+- feat(analysis): Forecast 오버라이드(점수/방향/p_up) + 레짐/RV 폴백 강화
+- feat(exec): 실행 동기화 가시 로그(READ/SEND/RSLT 요약)와 틱 로그 추가
+- feat(log): FEATURES 백필 감지 기반 샘플링/요약 로깅
