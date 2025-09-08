@@ -39,6 +39,26 @@ def is_exec_enabled(bus) -> bool:
         return _exec_active_from_env()
 # [ANCHOR:STRAT_ROUTE] end
 
+# 글로벌 루프 가드 및 유틸
+_EQUITY_LOOP_STARTED = False
+_equity_lock = threading.Lock()
+_HEARTBEAT_STARTED = False
+_heartbeat_lock = threading.Lock()
+
+
+def _clamped_interval(env_key: str, default_s: int, min_s: int = 5) -> float:
+    try:
+        v = int(os.getenv(env_key, str(default_s)))
+    except Exception:
+        v = default_s
+    return max(min_s, v)
+
+
+def _sleep_with_jitter(base_s: float) -> None:
+    import random, time
+
+    time.sleep(base_s + random.random() * (base_s * 0.1))
+
 # 로컬 모듈
 try:
     from ftm2.core.env import load_env_chain
@@ -459,7 +479,8 @@ class Orchestrator:
     def on_bar_close(self, sym: str, itv: str, bus) -> None:
         from ftm2.utils.env import env_str, env_bool
         mode = env_str("STRAT_MODE", "ensemble")
-        dummy_enabled = env_bool("INTENT_DUMMY", False)
+        dummy_enabled = env_bool("DUMMY_INTENT", False)
+
         intent = None
         if mode == "ensemble":
             rows = self.forecast.process_snapshot(bus.snapshot())
@@ -993,45 +1014,74 @@ class Orchestrator:
 
     # [ANCHOR:ORCH_EQUITY_LOOP] begin
     def _equity_loop(self, period_s: int | None = None) -> None:
-        period = period_s or env_int("EQUITY_POLL_SEC", 60)
+        period = _clamped_interval("EQUITY_POLL_SEC", period_s or 20, 5)
         backoff = period
         while not self._stop.is_set():
-            if getattr(self.streams, "_last_account_ts", 0) and time.time() - self.streams._last_account_ts < period:
-                time.sleep(period)
-                continue
             try:
-                snap = self.cli_trade.fetch_equity()
-                wallet = float(snap.get("wallet", 0.0))
-                avail = float(snap.get("available", 0.0))
-                equity = float(snap.get("totalMarginBalance", wallet))
-                upnl = float(snap.get("totalUnrealizedProfit", 0.0))
-                if not hasattr(self.bus, "state"):
-                    class _S:  # type: ignore
-                        pass
-                    self.bus.state = _S()
-                self.bus.state.equity_usdt = equity
-                self.bus.set_account(
-                    {
-                        "ccy": "USDT",
-                        "totalWalletBalance": wallet,
-                        "availableBalance": avail,
-                        "totalUnrealizedProfit": upnl,
-                        "totalMarginBalance": equity,
-                        "wallet": wallet,
-                        "avail": avail,
-                        "upnl": upnl,
-                        "equity": equity,
-                    }
-                )
-                log.info("[EQUITY] totalWallet=%.2f available=%.2f src=ACCOUNT", wallet, avail)
-                backoff = period
+                snap = self.cli_trade.account_snapshot()  # ← 단일 진실원
+                if snap:
+                    eq = float(snap.get("equity", 0.0))
+                    wall = float(snap.get("wallet", 0.0))
+                    avail = float(snap.get("avail", 0.0))
+
+                    if not hasattr(self.bus, "state"):
+                        class _S:  # type: ignore
+                            pass
+
+                        self.bus.state = _S()
+                    self.bus.state.equity_usdt = eq
+
+                    self.bus.set_account(
+                        {
+                            "ccy": "USDT",
+                            "totalWalletBalance": wall,
+                            "availableBalance": avail,
+                            "totalUnrealizedProfit": float(snap.get("upnl", 0.0)),
+                            "totalMarginBalance": eq,
+                            # 호환 키
+                            "wallet": wall,
+                            "avail": avail,
+                            "upnl": float(snap.get("upnl", 0.0)),
+                            "equity": eq,
+                        }
+                    )
+                    log.info(
+                        "[EQUITY] updated: totalWallet=%.2f available=%.2f equity=%.2f src=ACCOUNT",
+                        wall,
+                        avail,
+                        eq,
+                    )
+                    backoff = period
             except Exception as e:
-                log.warning("E_BAL_POLL_FAIL %r backoff=%s", e, backoff)
+                log.warning(
+                    "E_BAL_POLL_FAIL code=%s msg=%s backoff=%ss",
+                    getattr(e, "code", ""),
+                    getattr(e, "msg", str(e)),
+                    backoff,
+                )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, period * 5)
                 continue
-        time.sleep(period)
+            _sleep_with_jitter(period)
     # [ANCHOR:ORCH_EQUITY_LOOP] end
+
+    def _positions_loop(self, period_s: int | None = None) -> None:
+        period = period_s or env_int("POSITIONS_POLL_SEC", 10)
+        backoff = period
+        while not self._stop.is_set():
+            try:
+
+                pos = self.cli_trade.fetch_positions(self.symbols)
+                if pos:
+                    self.bus.set_positions(pos)
+            except Exception as e:
+                log.warning("E_POS_POLL_FAIL %r backoff=%s", e, backoff)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, period * 5)
+                continue
+            backoff = period
+            time.sleep(period)
+
 
     def _positions_loop(self, period_s: int | None = None) -> None:
         period = period_s or env_int("POSITIONS_POLL_SEC", 10)
@@ -1194,12 +1244,14 @@ class Orchestrator:
         t.start()
         self._threads.append(t)
 
-        # Equity 폴링 (중복 방지)
-        if not getattr(self, "_equity_thread_started", False):
-            te = threading.Thread(target=self._equity_loop, name="equity-poll", daemon=True)
-            te.start()
-            self._threads.append(te)
-            self._equity_thread_started = True
+        # Equity 폴링 루프 시작(중복 방지)
+        with _equity_lock:
+            global _EQUITY_LOOP_STARTED
+            if not _EQUITY_LOOP_STARTED:
+                te = threading.Thread(target=self._equity_loop, name="equity-poll", daemon=True)
+                te.start()
+                self._threads.append(te)
+                _EQUITY_LOOP_STARTED = True
 
         # Positions 폴링 (중복 방지)
         if not getattr(self, "_pos_thread_started", False):
@@ -1208,10 +1260,6 @@ class Orchestrator:
             self._threads.append(tp)
             self._pos_thread_started = True
 
-        # Positions 폴링 루프 시작
-        t = threading.Thread(target=self._positions_loop, name="pos-poll", daemon=True)
-        t.start()
-        self._threads.append(t)
 
         # 설정 핫리로드
         t = threading.Thread(target=self._reload_cfg_loop, name="cfg-reload", daemon=True)
@@ -1219,16 +1267,22 @@ class Orchestrator:
         self._threads.append(t)
 
         # 더미 전략 루프
-        if env_bool("INTENT_DUMMY", False):
+        if env_bool("DUMMY_INTENT", False):
             st = threading.Thread(target=self._strategy_loop, name="strategy", daemon=True)
             st.start()
             self._threads.append(st)
+        else:
+            log.info("[STRATEGY] dummy-intent disabled (DUMMY_INTENT=0)")
 
+        # 하트비트 스레드(중복 방지)
+        with _heartbeat_lock:
+            global _HEARTBEAT_STARTED
+            if not _HEARTBEAT_STARTED:
+                t = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
+                t.start()
+                self._threads.append(t)
+                _HEARTBEAT_STARTED = True
 
-        # 하트비트 스레드
-        t = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
-        t.start()
-        self._threads.append(t)
 
 
         # Discord 봇 (토큰 없으면 내부에서 자동 비활성 로그 후 종료)

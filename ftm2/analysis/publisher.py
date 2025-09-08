@@ -50,49 +50,43 @@ class AnalysisPublisher:
 
     # [ANCHOR:ANALYSIS_PUBLISHER]
     def _render(self, snap: dict) -> str:
-        import time, os
-        marks = snap.get("marks", {}) or {}
-        feats = snap.get("features", {}) or {}
-        regimes = snap.get("regimes", {}) or {}
-        fcs = snap.get("forecasts", {}) or {}
-        syms = snap.get("symbols") or sorted(marks.keys()) or ["BTCUSDT", "ETHUSDT"]
-        tfs = ("5m", "15m", "1h", "4h")
+        marks = snap.get("marks") or {}
+        regimes = snap.get("regimes") or {}
+        forecasts = snap.get("forecasts") or {}
+        feats = snap.get("features") or {}
+
+        syms = getattr(self.bot.bus, "symbols", None) or snap.get("symbols") or sorted(marks.keys())
         t = time.strftime("%H:%M:%S", time.gmtime(int(snap.get("now_ts", 0)) / 1000))
         lines = [f"🧠 실시간 분석 리포트 ({t} UTC)"]
+        arrow = {"LONG": "⬆", "SHORT": "⬇", "FLAT": "→"}
+        tfs = ("5m", "15m", "1h", "4h")
 
-        def feat(s: str, tf: str):
-            f = feats.get((s, tf)) or {}
-            r = regimes.get((s, tf)) or {}
-            ema = float(r.get("ema", 0.0))
-            rv20 = float(f.get("rv20", 0.0))
-            atr = float(f.get("atr", 0.0))
-            ret1 = float(f.get("ret1", 0.0)) * 100.0
-            rv_pct = float(r.get("rv_pr", 0.0))
-            return ema, rv20, atr, ret1, rv_pct
+        def _one(sym: str, tf: str) -> str:
+            fc = forecasts.get((sym, tf), {}) or {}
+            rg = regimes.get((sym, tf), {}) or {}
+            ft = feats.get((sym, tf), {}) or {}
+            sc = float(fc.get("score") or 0.0)
+            pu = float(fc.get("prob_up") or fc.get("p_up") or 0.5)
+            st = (fc.get("stance") or "FLAT").upper()
+            em = arrow.get(st, "→")
+            rgl = rg.get("label") or (rg.get("code") or "FLAT")
+            atr = float(ft.get("atr14") or 0.0)
+            rv = float(ft.get("rv20") or rg.get("rv_pr") or 0.0)
+            ema = float(ft.get("ema_spread") or rg.get("ema_spread") or 0.0)
+            return f"{tf}: {sc:+.2f}({em}, r={rgl}, p_up={pu:.2f}, atr={atr:.2f}, rv={rv:.3f}, ema={ema:+.5f})"
 
         for s in syms:
-            lines.append(f"[{s}]")
-            for tf in tfs:
-                fc = fcs.get((s, tf)) or {}
-                sc = float(fc.get("score", 0.0))
-                pup = float(fc.get("p_up") or fc.get("prob_up") or 0.5)
-                stance = (fc.get("stance") or "FLAT").upper()
-                rcode = (regimes.get((s, tf)) or {}).get("code", "")
-                arrow = "⬆" if stance == "LONG" else ("⬇" if stance == "SHORT" else "→")
-                lines.append(f"  {tf:<3}  점수 {sc:+.2f} | 방향 {arrow} | p_up {pup:.2f} | 레짐 {rcode}")
-                ema, rv20, atr, ret1, rv_pct = feat(s, tf)
-                lines.append(
-                    f"      지표: EMA {ema:+.5f} | RV20 {rv20:.2%} | ATR {atr:.2f} | RET1 {ret1:+.3f}% | RV%tile {rv_pct:.3f}"
-                )
-                ex = (fc.get("explain") or {})
-                lines.append(
-                    f"      기여도: 모멘텀 {float(ex.get('mom',0.0)):+.2f} / 평균회귀 {float(ex.get('meanrev',0.0)):+.2f} / 돌파 {float(ex.get('breakout',0.0)):+.2f}"
-                )
-            lines.append("")
+            parts = [_one(s, tf) for tf in tfs]
+            lines.append(f"• {s} — " + " | ".join(parts))
+
+            contrib = forecasts.get((s, tfs[0]), {}).get("contrib")
+            if isinstance(contrib, dict) and contrib:
+                kv = "  ".join(f"{k}:{float(v):+0.2f}" for k, v in contrib.items())
+                lines.append(f"  기여도: {kv}")
 
         dm = (os.getenv("DATA_MODE") or "live").lower()
         tm = (os.getenv("TRADE_MODE") or "testnet").lower()
-        lines.append(f"※ 데이터: {dm} | 트레이딩: {tm}")
+        lines.append(f"※ 데이터: {dm}, 트레이딩: {tm}")
 
         return "\n".join(lines)
     # [ANCHOR:ANALYSIS_PUBLISHER] end
