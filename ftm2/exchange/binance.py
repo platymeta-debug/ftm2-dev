@@ -18,6 +18,7 @@ import os
 import time
 import hmac
 import json
+import uuid
 import hashlib
 import threading
 import logging
@@ -167,6 +168,21 @@ def _err(code: str, msg: str, **ctx) -> Dict[str, Any]:
     return {"ok": False, "error": {"code": code, "msg": msg, "ctx": ctx}}
 
 
+def _as_bool(val, default: bool = False) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if not v:
+            return default
+        return v in {"1", "true", "t", "y", "yes", "on"}
+    return bool(val)
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -300,19 +316,50 @@ class BinanceClient:
         recv_window_ms: int = 30000,
         order_active: bool = False,  # 기본 False → 스텁 반환
         http_timeout: float = 10.0,
+        trade_mode: Optional[str] = None,
+        exec_active: Optional[bool | str] = None,
+        arm_live: Optional[str] = None,
+        hedge_mode: Optional[bool | str] = None,
     ) -> None:
-        self.mode = (mode or "testnet").lower()
-        if self.mode not in ("testnet", "live"):
-            raise ValueError("mode must be 'testnet' or 'live'")
+        tm_raw = trade_mode or os.getenv("TRADE_MODE") or mode or "testnet"
+        tm = (tm_raw or "testnet").strip().lower()
+        if tm not in ("dry", "testnet", "live"):
+            tm = "testnet"
+        self.trade_mode = tm
+
+        actual_mode = "testnet" if tm == "dry" else tm
+        if actual_mode not in ("testnet", "live"):
+            actual_mode = "testnet"
+        self.mode = actual_mode
 
         defaults = self.DEFAULTS[self.mode]
         self.rest_base = (rest_base or os.getenv("REST_BASE_OVERRIDE") or defaults["rest"]).rstrip("/")
         self.ws_base = (ws_base or os.getenv("WS_BASE_OVERRIDE") or defaults["ws"]).rstrip("/")
-        self.key = key or ""
-        self.secret = secret or ""
-        self.recv_window_ms = int(os.getenv("BINANCE_RECV_WINDOW", str(recv_window_ms)))
+
+        prefer_env = "live" if self.trade_mode == "live" else "testnet"
+        resolved_key = key or ""
+        resolved_secret = secret or ""
+        if not resolved_key or not resolved_secret:
+            env_key, env_secret = self._load_keypair_unified(prefer_env)
+            if not resolved_key:
+                resolved_key = env_key
+            if not resolved_secret:
+                resolved_secret = env_secret
+        self.key = resolved_key or ""
+        self.secret = resolved_secret or ""
+
+        recv_env = os.getenv("RECV_WINDOW_MS") or os.getenv("BINANCE_RECV_WINDOW")
+        try:
+            self.recv_window_ms = int(recv_env) if recv_env else int(recv_window_ms)
+        except Exception:
+            self.recv_window_ms = int(recv_window_ms)
+
         self._clock_offset_ms = 0
-        self.order_active = order_active
+        self._order_toggle = bool(order_active)
+        exec_env_val = exec_active if exec_active is not None else os.getenv("EXEC_ACTIVE")
+        self._exec_active = _as_bool(exec_env_val, default=bool(order_active))
+        self.arm_live = (arm_live if arm_live is not None else os.getenv("ARM_LIVE", "")).strip()
+        self.hedge_mode = _as_bool(hedge_mode if hedge_mode is not None else os.getenv("HEDGE_MODE"), default=False)
         self.http_timeout = http_timeout
 
         self._filters_cache = {}
@@ -323,13 +370,43 @@ class BinanceClient:
         self._bind_http_driver()
 
         log.info(
-            "[BINANCE_CLIENT_STATUS] mode=%s rest=%s ws=%s http=%s ws_driver=%s",
+            "[BINANCE_CLIENT_STATUS] mode=%s trade_mode=%s rest=%s ws=%s http=%s ws_driver=%s",
             self.mode,
+            self.trade_mode,
             self.rest_base,
             self.ws_base,
             self.http or "none",
             _WS_HAVE or "none",
         )
+
+    def _arm_live_armed(self) -> bool:
+        if self.trade_mode != "live":
+            return True
+        marker = (self.arm_live or "").strip()
+        if not marker:
+            return False
+        return marker.upper() in {"I-ACK", "ACK", "YES", "Y", "OK", "ARMED"}
+
+    @property
+    def exec_active(self) -> bool:
+        return bool(self._exec_active)
+
+    def set_exec_active(self, active: Optional[bool | str]) -> None:
+        self._exec_active = _as_bool(active, default=self._exec_active)
+
+    @property
+    def order_active(self) -> bool:
+        if self.trade_mode == "dry":
+            return False
+        if not self._order_toggle:
+            return False
+        if not self.exec_active:
+            return False
+        return self._arm_live_armed()
+
+    @order_active.setter
+    def order_active(self, value: bool) -> None:
+        self._order_toggle = bool(value)
 
     def sync_time(self) -> None:
         t0 = int(time.time() * 1000)
@@ -519,14 +596,14 @@ class BinanceClient:
         payload: Optional[str] = None
         if signed:
             if not self.key or not self.secret:
-                return _err("E_KEY_EMPTY", "API key/secret required", path=path)
+                return _err("E_AUTH", "API key/secret required", path=path)
             hdrs["X-MBX-APIKEY"] = self.key
             payload = self._encode_and_sign(params)
         else:
             # 일부 엔드포인트(유저스트림)는 KEY 헤더만 요구
             if "listenKey" in path or path.endswith("/listenKey"):
                 if not self.key:
-                    return _err("E_KEY_EMPTY", "API key required for user stream", path=path)
+                    return _err("E_AUTH", "API key required for user stream", path=path)
                 hdrs["X-MBX-APIKEY"] = self.key
 
         try:
@@ -810,21 +887,47 @@ class BinanceClient:
 
     def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
         """
-        주문 스텁: 기본은 실제 전송하지 않고 E_ORDER_STUB 반환.
-        M3에서 order_active(True) 또는 ENV로 활성화 예정.
+        Futures 주문 생성. 활성 조건(order_active) 미충족 시 스텁(E_ORDER_STUB) 반환.
 
-        기대 payload 예:
-          {"symbol":"BTCUSDT","side":"BUY","type":"MARKET","quantity":"0.001","newClientOrderId":"..."}
+        payload 필수 필드: symbol, side, type, quantity
+        선택 필드: price, reduceOnly, positionSide, timeInForce, newClientOrderId
         """
-        path = "/v1/order/test" if validate_only else "/v1/order"
+        if not isinstance(payload, dict):
+            return _err("E_SCHEMA", "payload must be dict")
+
+        required = ("symbol", "side", "type", "quantity")
+        for field in required:
+            if field not in payload or payload[field] in (None, ""):
+                return _err("E_SCHEMA", f"missing field: {field}")
+
         if not self.order_active and not validate_only:
-            return _err("E_ORDER_STUB", "order endpoint is stubbed (disabled)", payload=payload)
+            if self.trade_mode == "dry":
+                reason = "dry"
+            elif not self._order_toggle:
+                reason = "manual_off"
+            elif not self.exec_active:
+                reason = "exec_off"
+            elif not self._arm_live_armed():
+                reason = "arm_live"
+            else:
+                reason = "inactive"
+            log.info("[ORDER_STUB] trade_mode=%s reason=%s payload=%s", self.trade_mode, reason, {"symbol": payload.get("symbol"), "side": payload.get("side")})
+            return _err("E_ORDER_STUB", f"order path disabled ({reason})", payload=payload)
+
         data = dict(payload)
-        if (data.get("type") or "").upper() == "MARKET":
+        data.setdefault(
+            "newClientOrderId",
+            f"ftm2-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}",
+        )
+
+        otype = (data.get("type") or "").upper()
+        if otype == "MARKET":
             data.pop("timeInForce", None)
             data.pop("price", None)
         if "reduceOnly" in data:
             data["reduceOnly"] = "true" if data["reduceOnly"] else "false"
+
+        path = "/v1/order/test" if validate_only else "/v1/order"
         r = self._http_request("POST", path, params=data, signed=True)
         if not r.get("ok"):
             err = r.get("error") or {}
@@ -846,14 +949,33 @@ class BinanceClient:
     # ------------------------------------------------------------------
     # User Data Stream (listenKey)
     # ------------------------------------------------------------------
+    def get_listen_key(self) -> Dict[str, Any]:
+        r = self._http_request("POST", "/v1/listenKey")
+        if not r.get("ok"):
+            return r
+        data = r.get("data") or {}
+        key = data.get("listenKey")
+        if isinstance(key, str) and key:
+            return _ok({"listenKey": key})
+        return _err("E_BINANCE", "listenKey missing", ctx=data)
+
+    def keepalive_listen_key(self, listen_key: str) -> Dict[str, Any]:
+        r = self._http_request("PUT", "/v1/listenKey", params={"listenKey": listen_key})
+        if r.get("ok"):
+            return {"ok": True}
+        return r
+
+    def close_listen_key(self, listen_key: str) -> Dict[str, Any]:
+        return self._http_request("DELETE", "/v1/listenKey", params={"listenKey": listen_key})
+
     def start_user_stream(self) -> Dict[str, Any]:
-        return self._http_request("POST", "/v1/listenKey")  # header: X-MBX-APIKEY
+        return self.get_listen_key()
 
     def keepalive_user_stream(self, listen_key: str) -> Dict[str, Any]:
-        return self._http_request("PUT", "/v1/listenKey", params={"listenKey": listen_key})
+        return self.keepalive_listen_key(listen_key)
 
     def close_user_stream(self, listen_key: str) -> Dict[str, Any]:
-        return self._http_request("DELETE", "/v1/listenKey", params={"listenKey": listen_key})
+        return self.close_listen_key(listen_key)
 
     # ------------------------------------------------------------------
     # WS subscribe (단일 스트림 방식 /ws/<streamName>)

@@ -8,8 +8,10 @@ Order Router: targets -> orders (dry-run by default)
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Tuple, List, Any, Optional
-import time
 import math
+import os
+import time
+import uuid
 import logging
 
 try:
@@ -45,6 +47,14 @@ class OrderRouter:
         self._meta: Dict[str, Dict[str, float]] = {}  # sym -> {step,min_notional}
         self._warm = False
         self.log = log
+        try:
+            self.retry_delay = float(os.getenv("EXEC_COOLDOWN_S", str(self.cfg.cooldown_s)))
+        except Exception:
+            self.retry_delay = self.cfg.cooldown_s
+        try:
+            self.exec_retry = max(0, int(os.getenv("EXEC_RETRY", "1")))
+        except Exception:
+            self.exec_retry = 1
 
     # ---- exchange meta ----
     def _ensure_meta(self, symbols: List[str]) -> None:
@@ -100,6 +110,35 @@ class OrderRouter:
             return True
         return False
 
+    def _link_id(self) -> str:
+        return f"ftm2-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+
+    def _dispatch_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(payload)
+        base_id = data.get("newClientOrderId") or self._link_id()
+        last_resp: Optional[Dict[str, Any]] = None
+        for attempt in range(self.exec_retry + 1):
+            if attempt == 0:
+                data["newClientOrderId"] = base_id
+            else:
+                data["newClientOrderId"] = f"{base_id}-r{attempt}"
+            resp = self.cli.create_order(data)
+            if resp.get("ok"):
+                return resp
+            last_resp = resp
+            err = resp.get("error") or {}
+            self.log.warning(
+                "[EXEC][ORDER_FAIL] symbol=%s side=%s try=%d code=%s msg=%s",
+                data.get("symbol"),
+                data.get("side"),
+                attempt,
+                err.get("code"),
+                err.get("msg"),
+            )
+            if attempt < self.exec_retry:
+                time.sleep(self.retry_delay)
+        return last_resp or {"ok": False, "error": {"code": "E_EXEC_FAIL", "msg": "order send failed"}}
+
     def _send_adjust(self, sym: str, side: str, qty: float, reduce_only: bool = False, tif: str = "GTC") -> dict:
         self._ensure_meta([sym])
         step = (self._meta.get(sym) or {}).get("step", 0.001)
@@ -109,13 +148,18 @@ class OrderRouter:
         if not self.cfg.active:
             self.log.info("[EXEC_DRY] %s %s qty=%s", sym, side, qty_r)
             return {"ok": True, "dry": True}
-        payload = {"symbol": sym, "side": side, "type": self.cfg.order_type,
-                   "quantity": f"{qty_r:.10f}".rstrip("0").rstrip(".")}
+        payload = {
+            "symbol": sym,
+            "side": side,
+            "type": self.cfg.order_type,
+            "quantity": f"{qty_r:.10f}".rstrip("0").rstrip("."),
+            "newClientOrderId": self._link_id(),
+        }
         if reduce_only:
             payload["reduceOnly"] = True
         if tif:
             payload["timeInForce"] = tif
-        return self.cli.create_order(payload)
+        return self._dispatch_order(payload)
 
     def consume_amt(self, amt):
         sym = amt["symbol"]
@@ -224,6 +268,7 @@ class OrderRouter:
             }
             if reduce_only:
                 payload["reduceOnly"] = True
+            payload["newClientOrderId"] = self._link_id()
 
             mode = "LIVE" if self.cfg.active else "DRY"
             if not self.cfg.active:
@@ -236,7 +281,7 @@ class OrderRouter:
                 continue
 
             # 실주문: BinanceClient 가 order_active=False 면 스텁에러가 온다 → 그대로 노출
-            r = self.cli.create_order(payload)
+            r = self._dispatch_order(payload)
             if r.get("ok"):
                 self.log.info("[EXEC.SEND] %s %s qty=%s px=~%g", sym, side, payload["quantity"], price)
                 self._last_sent_ms[sym] = int(time.time() * 1000)
@@ -291,13 +336,27 @@ class OrderRouter:
             if qty is None:
                 return {"ok": False, "error": "qty required in force_flat (router has no state)"}
             qstr = f"{qty:.10f}".rstrip("0").rstrip(".")
-            payload_sell = {"symbol": symbol, "side": "SELL", "type": self.cfg.order_type, "quantity": qstr, "reduceOnly": True}
-            payload_buy = {"symbol": symbol, "side": "BUY", "type": self.cfg.order_type, "quantity": qstr, "reduceOnly": True}
+            payload_sell = {
+                "symbol": symbol,
+                "side": "SELL",
+                "type": self.cfg.order_type,
+                "quantity": qstr,
+                "reduceOnly": True,
+                "newClientOrderId": self._link_id(),
+            }
+            payload_buy = {
+                "symbol": symbol,
+                "side": "BUY",
+                "type": self.cfg.order_type,
+                "quantity": qstr,
+                "reduceOnly": True,
+                "newClientOrderId": self._link_id(),
+            }
             if not self.cfg.active:
                 log.warning("[EXEC_DRY][FLAT] %s qty=%s", symbol, qstr)
                 return {"ok": True, "dry": True}
-            rs = self.cli.create_order(payload_sell)
-            rb = self.cli.create_order(payload_buy) if not rs.get("ok") else {"ok": True, "note": "sell-first-ok"}
+            rs = self._dispatch_order(payload_sell)
+            rb = self._dispatch_order(payload_buy) if not rs.get("ok") else {"ok": True, "note": "sell-first-ok"}
             return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -310,8 +369,24 @@ class OrderRouter:
             if not self.cfg.active:
                 log.warning("[EXEC_DRY][REDUCE_TO] %s → |qty|<=%.10f", symbol, target_abs_qty)
                 return {"ok": True, "dry": True}
-            rs = self.cli.create_order({"symbol": symbol, "side": "SELL", "type": self.cfg.order_type, "quantity": "999999", "reduceOnly": True})
-            rb = self.cli.create_order({"symbol": symbol, "side": "BUY", "type": self.cfg.order_type, "quantity": "999999", "reduceOnly": True}) if not rs.get("ok") else {"ok": True}
+            order_sell = {
+                "symbol": symbol,
+                "side": "SELL",
+                "type": self.cfg.order_type,
+                "quantity": "999999",
+                "reduceOnly": True,
+                "newClientOrderId": self._link_id(),
+            }
+            order_buy = {
+                "symbol": symbol,
+                "side": "BUY",
+                "type": self.cfg.order_type,
+                "quantity": "999999",
+                "reduceOnly": True,
+                "newClientOrderId": self._link_id(),
+            }
+            rs = self._dispatch_order(order_sell)
+            rb = self._dispatch_order(order_buy) if not rs.get("ok") else {"ok": True}
             return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
         except Exception as e:
             return {"ok": False, "error": str(e)}
