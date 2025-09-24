@@ -6,7 +6,9 @@ Market Streams Manager
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from typing import List, Dict, Any, Optional
@@ -18,7 +20,342 @@ log = logging.getLogger("ftm2.streams")
 if not log.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+try:  # pragma: no cover - optional dependency
+    from websocket import WebSocketApp  # type: ignore
+except Exception:  # pragma: no cover
+    WebSocketApp = None  # type: ignore
+
+
+def _env_bool(val: Optional[str], default: bool = False) -> bool:
+    if val is None:
+        return default
+    v = val.strip().lower()
+    if not v:
+        return default
+    return v in {"1", "true", "t", "y", "yes", "on"}
+
+
 # [ANCHOR:STREAMS]
+class UserStreamManager:
+    """Manage Binance user data stream lifecycle (listenKey + WS)."""
+
+    def __init__(self, bus: StateBus, client: BinanceClient) -> None:
+        self.bus = bus
+        self.client = client
+        self.listen_key: Optional[str] = None
+        self.ws: Optional[WebSocketApp] = None
+        self.ws_thread: Optional[threading.Thread] = None
+        self._runner: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._last_keepalive = 0.0
+        self.keepalive_sec = self._parse_int(os.getenv("LISTENKEY_REFRESH_SEC"), 1500)
+        self.backoff_steps = self._parse_backoff(os.getenv("WS_RECONNECT_BACKOFF", "3,10,30"))
+        self.boot_hydrate = _env_bool(os.getenv("POSITIONS_BOOT_HYDRATE", "true"), True)
+
+    @staticmethod
+    def _parse_int(value: Optional[str], default: int) -> int:
+        if value is None or value == "":
+            return default
+        try:
+            return max(0, int(float(value)))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _parse_backoff(raw: Optional[str]) -> List[int]:
+        vals: List[int] = []
+        for part in (raw or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                vals.append(max(1, int(float(part))))
+            except Exception:
+                continue
+        return vals or [3, 10, 30]
+
+    def start(self) -> None:
+        if self._runner and self._runner.is_alive():
+            return
+        self._stop.clear()
+        self._runner = threading.Thread(target=self._run, name="user-stream", daemon=True)
+        self._runner.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._close_ws()
+        if self._runner and self._runner.is_alive():
+            self._runner.join(timeout=2.0)
+        self._runner = None
+
+    def _run(self) -> None:
+        try:
+            self._hydrate_positions()
+        except Exception:
+            log.exception("[USER_STREAM] hydrate failed")
+
+        backoff_idx = 0
+        while not self._stop.is_set():
+            if not self._ensure_listen_key():
+                delay = self._delay(backoff_idx)
+                backoff_idx = min(backoff_idx + 1, len(self.backoff_steps) - 1)
+                log.warning("[USER_STREAM] listenKey unavailable retry_in=%ss", delay)
+                self._stop.wait(delay)
+                continue
+
+            if not self._open_ws():
+                self.listen_key = None
+                delay = self._delay(backoff_idx)
+                backoff_idx = min(backoff_idx + 1, len(self.backoff_steps) - 1)
+                self._stop.wait(delay)
+                continue
+
+            backoff_idx = 0
+            lost_key = False
+            while not self._stop.wait(1.0):
+                if not self._keepalive():
+                    lost_key = True
+                    break
+                if self.ws_thread and not self.ws_thread.is_alive():
+                    log.warning("[USER_STREAM] ws thread stopped")
+                    break
+
+            self._close_ws()
+            if lost_key:
+                self.listen_key = None
+
+            if self._stop.is_set():
+                break
+
+            delay = self._delay(backoff_idx)
+            backoff_idx = min(backoff_idx + 1, len(self.backoff_steps) - 1)
+            self._stop.wait(delay)
+
+    def _delay(self, idx: int) -> float:
+        if not self.backoff_steps:
+            return 3.0
+        return float(self.backoff_steps[min(idx, len(self.backoff_steps) - 1)])
+
+    def _hydrate_positions(self) -> None:
+        if not self.boot_hydrate:
+            return
+        try:
+            res = self.client.get_positions()
+        except Exception as exc:
+            log.warning("[USER_STREAM] hydrate error: %s", exc)
+            return
+        if not res.get("ok"):
+            log.warning("[USER_STREAM] hydrate failed: %s", res.get("error"))
+            return
+        arr = res.get("data") or []
+        positions: Dict[str, Dict[str, Any]] = {}
+        for row in arr:
+            sym = (row.get("symbol") or "").upper()
+            if not sym:
+                continue
+            try:
+                qty = float(row.get("positionAmt", 0.0))
+                ep = float(row.get("entryPrice", 0.0))
+                up = float(row.get("unrealizedProfit") or row.get("unRealizedProfit") or 0.0)
+            except Exception:
+                qty = ep = up = 0.0
+            positions[sym] = {
+                "symbol": sym,
+                "pa": qty,
+                "ep": ep,
+                "up": up,
+                "mt": row.get("marginType"),
+            }
+        if positions:
+            try:
+                self.bus.set_positions(positions)
+            except Exception:
+                log.exception("[USER_STREAM] set_positions error")
+            else:
+                log.info("[USER_STREAM] hydrated positions n=%d", len(positions))
+
+    def _ensure_listen_key(self) -> bool:
+        if self.listen_key:
+            return True
+        try:
+            res = self.client.get_listen_key()
+        except Exception as exc:
+            log.error("[USER_STREAM] listenKey request error: %s", exc)
+            return False
+        if res.get("ok"):
+            data = res.get("data") or {}
+            key = data.get("listenKey") if isinstance(data, dict) else None
+            if key:
+                self.listen_key = key
+                self._last_keepalive = time.time()
+                log.info("[USER_STREAM] listenKey=%s", key)
+                return True
+        log.error("[USER_STREAM] listenKey failed: %s", res.get("error"))
+        return False
+
+    def _keepalive(self) -> bool:
+        if not self.listen_key:
+            return False
+        if self.keepalive_sec <= 0:
+            return True
+        if time.time() - self._last_keepalive < self.keepalive_sec:
+            return True
+        try:
+            res = self.client.keepalive_listen_key(self.listen_key)
+        except Exception as exc:
+            log.warning("[USER_STREAM] keepalive exception: %s", exc)
+            res = {"ok": False, "error": {"msg": str(exc)}}
+        if res.get("ok"):
+            self._last_keepalive = time.time()
+            return True
+        log.warning("[USER_STREAM] keepalive failed: %s", res.get("error"))
+        self.listen_key = None
+        return False
+
+    def _open_ws(self) -> bool:
+        if not self.listen_key:
+            return False
+        if WebSocketApp is None:
+            log.error("[USER_STREAM] websocket-client not installed")
+            return False
+        url = f"{self.client.ws_base}/ws/{self.listen_key}"
+
+        def _on_message(_ws, message: str) -> None:
+            try:
+                data = json.loads(message)
+            except Exception:
+                log.debug("[USER_STREAM] decode fail: %s", message[:120])
+                return
+            self._handle_event(data)
+
+        def _on_error(_ws, error) -> None:  # pragma: no cover
+            log.warning("[USER_STREAM] ws error: %s", error)
+
+        def _on_close(_ws, status_code, msg) -> None:  # pragma: no cover
+            log.info("[USER_STREAM] ws close code=%s msg=%s", status_code, msg)
+
+        app = WebSocketApp(url, on_message=_on_message, on_error=_on_error, on_close=_on_close)
+        self.ws = app
+
+        def _runner() -> None:
+            try:
+                app.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as exc:  # pragma: no cover
+                log.warning("[USER_STREAM] ws run error: %s", exc)
+
+        self.ws_thread = threading.Thread(target=_runner, name=f"user-ws:{self.listen_key}", daemon=True)
+        self.ws_thread.start()
+        log.info("[USER_STREAM] ws connect url=%s", url)
+        return True
+
+    def _close_ws(self) -> None:
+        app = self.ws
+        self.ws = None
+        if app is not None:
+            try:
+                app.close()
+            except Exception:
+                pass
+        thread = self.ws_thread
+        self.ws_thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _handle_event(self, event: Dict[str, Any]) -> None:
+        etype = (event.get("e") or "").upper()
+        if etype == "ORDER_TRADE_UPDATE":
+            self._handle_order_update(event)
+        elif etype == "ACCOUNT_UPDATE":
+            self._handle_account_update(event)
+
+    def _handle_order_update(self, event: Dict[str, Any]) -> None:
+        order = event.get("o") or {}
+        rec = {
+            "symbol": (order.get("s") or "").upper(),
+            "side": order.get("S"),
+            "execType": order.get("x"),
+            "status": order.get("X"),
+            "lastQty": float(order.get("l", 0.0)),
+            "lastPrice": float(order.get("L", 0.0)),
+            "cumQty": float(order.get("Z", 0.0)),
+            "avgPrice": float(order.get("ap", 0.0)),
+            "orderId": order.get("i"),
+            "clientOrderId": order.get("c"),
+            "commission": float(order.get("n", 0.0)),
+            "ts": int(event.get("E") or order.get("T") or 0),
+        }
+        try:
+            self.bus.push_fill(rec)
+        except Exception:
+            log.exception("[USER_STREAM] push_fill error")
+        else:
+            log.info("[USER_STREAM] fill %s %s status=%s", rec.get("symbol"), rec.get("side"), rec.get("status"))
+
+    def _handle_account_update(self, event: Dict[str, Any]) -> None:
+        payload = event.get("a") or {}
+        pos_map: Dict[str, Dict[str, Any]] = {}
+        up_sum = 0.0
+        for row in payload.get("P", []):
+            sym = (row.get("s") or "").upper()
+            if not sym:
+                continue
+            try:
+                qty = float(row.get("pa", 0.0))
+                ep = float(row.get("ep", 0.0))
+                up = float(row.get("up", 0.0))
+            except Exception:
+                qty = ep = up = 0.0
+            pos_map[sym] = {
+                "symbol": sym,
+                "pa": qty,
+                "ep": ep,
+                "up": up,
+                "mt": row.get("mt"),
+            }
+            up_sum += up
+        if pos_map:
+            try:
+                self.bus.set_positions(pos_map)
+            except Exception:
+                log.exception("[USER_STREAM] set_positions error")
+
+        bal = None
+        for item in payload.get("B", []):
+            if (item.get("a") or "").upper() == "USDT":
+                bal = item
+                break
+        if bal:
+            try:
+                wallet = float(bal.get("wb", 0.0))
+                avail = float(bal.get("cw", 0.0))
+                equity = wallet + up_sum
+            except Exception:
+                wallet = avail = equity = 0.0
+            account = {
+                "ccy": "USDT",
+                "totalWalletBalance": wallet,
+                "availableBalance": avail,
+                "totalUnrealizedProfit": up_sum,
+                "totalMarginBalance": equity,
+                "wallet": wallet,
+                "avail": avail,
+                "upnl": up_sum,
+                "equity": equity,
+            }
+            try:
+                self.bus.set_account(account)
+            except Exception:
+                log.exception("[USER_STREAM] set_account error")
+            else:
+                log.info(
+                    "[USER_STREAM] account wallet=%.2f upnl=%.2f equity=%.2f avail=%.2f",
+                    wallet,
+                    up_sum,
+                    equity,
+                    avail,
+                )
+
+
 # [ANCHOR:DUAL_MODE]
 class StreamManager:
     def __init__(
@@ -50,10 +387,7 @@ class StreamManager:
         self._poll_ths: List[threading.Thread] = []
         self._stop = threading.Event()
 
-        # user stream
-        self._listen_key: Optional[str] = None
-        self._keepalive_th: Optional[threading.Thread] = None
-        self._last_account_ts: float = 0.0
+        self.user_stream: Optional[UserStreamManager] = None
 
     # ---------------------- public API ----------------------
     def start(self) -> None:
@@ -84,41 +418,24 @@ class StreamManager:
         log.info("[WS START] kline=%s mark=%s symbols=%d",
                  ",".join(self.kline_intervals), self.use_mark, len(self.symbols))
 
-        # user stream
-        if self.use_user and self.user_cli and self.user_cli.key and self.user_cli.secret:
-            r = self.user_cli.start_user_stream()
-            if r.get("ok"):
-                self._listen_key = r["data"].get("listenKey")
-                if self._listen_key:
-                    h = self.user_cli.subscribe_user(self._listen_key, self._on_user)
-                    if h.error:
-                        log.warning("[WS HANDLE_ERR] user %s", h.error)
-                    self._handles.append(h)
-                    log.info("[LISTENKEY] started key=%s", self._listen_key)
-
-                    # keepalive 25분 주기
-                    self._keepalive_th = threading.Thread(target=self._keepalive_loop,
-                                                          name="listenKey-keepalive", daemon=True)
-                    self._keepalive_th.start()
-            else:
-                log.warning("[USER_STREAM] cannot start: %s", r.get("error"))
+        if self.use_user and self.user_cli and getattr(self.user_cli, "key", ""):
+            self.user_stream = UserStreamManager(self.bus, self.user_cli)
+            self.user_stream.start()
         else:
-            log.info("[USER_STREAM] disabled (no key/secret or use_user=False)")
+            log.info("[USER_STREAM] disabled (no key or use_user=False)")
 
     def stop(self) -> None:
         self._stop.set()
-        # close user stream first
-        if self._listen_key and self.user_cli:
+        if self.user_stream:
             try:
-                self.user_cli.close_user_stream(self._listen_key)
+                self.user_stream.stop()
             except Exception:
-                pass
+                log.exception("[USER_STREAM] stop error")
+            self.user_stream = None
         # stop ws handles
         ws_stop_all_parallel()
         self._handles.clear()
 
-        if self._keepalive_th and self._keepalive_th.is_alive():
-            self._keepalive_th.join(timeout=2.0)
         for t in list(self._poll_ths):
             if t.is_alive():
                 t.join(timeout=2.0)
@@ -197,107 +514,4 @@ class StreamManager:
         except Exception as e:
             log.exception("mark cb err: %s", e)
 
-    def _on_user(self, msg: Dict[str, Any]) -> None:
-        """
-        futures user data (요약):
-        - ACCOUNT_UPDATE: {"e":"ACCOUNT_UPDATE","a":{"B":[... balances ...], "P":[... positions ...]}}
-        - ORDER_TRADE_UPDATE: {"e":"ORDER_TRADE_UPDATE","o":{...}}
-        """
-        try:
-            evt = (msg.get("e") or "").upper()
-            if evt == "ACCOUNT_UPDATE":
-                a = msg.get("a") or {}
-                # [ANCHOR:WS_ON_USER] begin
-                pos_map: Dict[str, Dict[str, Any]] = {}
-                up_sum = 0.0
-                for p in a.get("P", []):
-                    sym = (p.get("s") or "").upper()
-                    if not sym:
-                        continue
-                    up = float(p.get("up", 0.0))
-                    pos_map[sym] = {
-                        "symbol": sym,
-                        "pa": float(p.get("pa", 0.0)),
-                        "ep": float(p.get("ep", 0.0)),
-                        "up": up,
-                        "mt": p.get("mt"),
-                    }
-                    up_sum += up
-                if pos_map:
-                    self.bus.set_positions(pos_map)
-
-                bal = None
-                for b in a.get("B", []):
-                    if (b.get("a") or "").upper() == "USDT":
-                        bal = b
-                        break
-                if bal:
-                    wb = float(bal.get("wb", 0.0))
-                    cw = float(bal.get("cw", 0.0))
-                    eq = wb + up_sum
-                    self.bus.set_account({
-                        "ccy": "USDT",
-                        "totalWalletBalance": wb,
-                        "availableBalance": cw,
-                        "totalUnrealizedProfit": up_sum,
-                        "totalMarginBalance": eq,
-                        "wallet": wb,
-                        "avail": cw,
-                        "upnl": up_sum,
-                        "equity": eq,
-                    })
-                    log.info(
-                        "[EQUITY] updated: wallet=%.2f upnl=%.2f equity=%.2f avail=%.2f src=USER",
-                        wb,
-                        up_sum,
-                        eq,
-                        cw,
-                    )
-                    self._last_account_ts = time.time()
-                # [ANCHOR:WS_ON_USER] end
-            elif evt == "ORDER_TRADE_UPDATE":
-                o = msg.get("o") or {}
-                rec = {
-                    "symbol": (o.get("s") or "").upper(),
-                    "side": o.get("S"),
-                    "execType": o.get("x"),
-                    "status": o.get("X"),
-                    "lastQty": float(o.get("l", 0.0)),
-                    "lastPrice": float(o.get("L", 0.0)),
-                    "cumQty": float(o.get("Z", 0.0)),
-                    "avgPrice": float(o.get("ap", 0.0)),
-                    "orderId": o.get("i"),
-                    "clientOrderId": o.get("c"),
-                    "commission": float(o.get("n", 0.0)),
-                    "ts": int(msg.get("E") or o.get("T") or 0),
-                }
-                self.bus.push_fill(rec)
-                log.info("[USER_STREAM][OTU] %s %s %s %s", o.get("s"), o.get("S"), o.get("X"), o.get("ap"))
-        except Exception as e:
-            log.exception("user cb err: %s", e)
-
     # ---------------------- internals ----------------------
-    def _keepalive_loop(self, period_s: int = 1500) -> None:
-        """
-        listenKey keepalive. 기본 25분(1500s).
-        실패 시 새 키로 재시작을 시도한다.
-        """
-        while not self._stop.is_set():
-            time.sleep(period_s)
-            if self._stop.is_set():
-                break
-            if not self._listen_key:
-                continue
-            r = self.user_cli.keepalive_user_stream(self._listen_key) if self.user_cli else {"ok": False}
-            if r.get("ok"):
-                log.debug("[KEEPALIVE] ok key=%s", self._listen_key)
-            else:
-                log.warning("[KEEPALIVE] failed %s → try re-create", r.get("error"))
-                # 재생성
-                r2 = self.user_cli.start_user_stream() if self.user_cli else {"ok": False}
-                if r2.get("ok"):
-                    self._listen_key = r2["data"].get("listenKey")
-                    log.info("[LISTENKEY] rotated key=%s", self._listen_key)
-                else:
-                    log.error("[LISTENKEY] rotate failed: %s", r2.get("error"))
-
