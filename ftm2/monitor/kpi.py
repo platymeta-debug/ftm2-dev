@@ -1,11 +1,74 @@
-# -*- coding: utf-8 -*-
-"""KPI snapshot utilities."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 import time
+import statistics as stats
+
 from ftm2.db.core import get_conn
+
+
+# [ANCHOR:KPI_PIPE]
+class KPIEngine:
+    def __init__(self) -> None:
+        self.counters = {
+            "order_attempt": 0,
+            "order_sent": 0,
+            "order_filled": 0,
+            "order_canceled": 0,
+        }
+        self.slippages_bps: List[float] = []
+        self.ttf_ms: List[float] = []
+        self.pnl_daily = 0.0
+        self.last_sent_ts: Dict[str, float] = {}
+
+    def on_event(self, evt: Dict) -> Dict:
+        et = evt.get("type")
+        now = time.time() * 1000
+        if et == "order_attempt":
+            self.counters["order_attempt"] += 1
+        elif et == "order_sent":
+            self.counters["order_sent"] += 1
+            link_id = evt.get("link_id")
+            if link_id:
+                self.last_sent_ts[link_id] = now
+        elif et == "order_filled":
+            self.counters["order_filled"] += 1
+            link_id = evt.get("link_id")
+            if link_id and link_id in self.last_sent_ts:
+                self.ttf_ms.append(now - self.last_sent_ts.pop(link_id))
+            if "slippage_bps" in evt:
+                try:
+                    self.slippages_bps.append(abs(float(evt["slippage_bps"])))
+                except Exception:
+                    pass
+        elif et == "order_canceled":
+            self.counters["order_canceled"] += 1
+        elif et == "pnl_update":
+            try:
+                self.pnl_daily = float(evt.get("pnl_daily", self.pnl_daily))
+            except Exception:
+                pass
+        return self.snapshot()
+
+    def snapshot(self) -> Dict:
+        slp = stats.mean(self.slippages_bps) if self.slippages_bps else 0.0
+        ttf = stats.median(self.ttf_ms) if self.ttf_ms else 0.0
+        fill_rate = self.counters["order_filled"] / max(1, self.counters["order_sent"])
+        cancel_rate = self.counters["order_canceled"] / max(1, self.counters["order_attempt"])
+        return {
+            "pnl_daily": round(self.pnl_daily, 2),
+            "orders": dict(self.counters),
+            "exec_quality": {
+                "slippage_bps_avg": round(slp, 2),
+                "ttf_ms_p50": round(ttf, 1),
+                "fill_rate": round(fill_rate, 3),
+                "cancel_rate": round(cancel_rate, 3),
+            },
+        }
+
+
+# ---- Legacy KPI helpers kept for compatibility ----
 
 
 # [ANCHOR:KPI_REPORTER]
@@ -45,6 +108,7 @@ def _get_day_e0(state) -> float:
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
     import os
+
     try:
         tz = ZoneInfo(os.getenv("DAY_PNL_TZ", "Asia/Seoul"))
     except Exception:
@@ -80,13 +144,19 @@ def compute_kpi_snapshot(state) -> Dict:
         try:
             conn = get_conn()
             now = time.time()
-            rows = conn.execute("SELECT id, readiness, created_ts FROM tickets WHERE created_ts>=?", (now-3600,)).fetchall()
+            rows = conn.execute(
+                "SELECT id, readiness, created_ts FROM tickets WHERE created_ts>=?",
+                (now - 3600,),
+            ).fetchall()
             total = len(rows)
             ready_cnt = sum(1 for r in rows if (r[1] or "").upper() == "READY")
             exec_cnt = 0
             ttf_ms = 0.0
             for r in rows:
-                oid = conn.execute("SELECT ts_filled FROM orders WHERE link_id=? AND ts_filled IS NOT NULL ORDER BY ts_filled ASC LIMIT 1", (r[0],)).fetchone()
+                oid = conn.execute(
+                    "SELECT ts_filled FROM orders WHERE link_id=? AND ts_filled IS NOT NULL ORDER BY ts_filled ASC LIMIT 1",
+                    (r[0],),
+                ).fetchone()
                 if oid and oid[0]:
                     exec_cnt += 1
                     try:
@@ -95,12 +165,12 @@ def compute_kpi_snapshot(state) -> Dict:
                         pass
             return {
                 "count": total,
-                "ready_rate": (ready_cnt/total*100.0) if total else 0.0,
-                "exec_rate": (exec_cnt/total*100.0) if total else 0.0,
-                "avg_ttf_ms": (ttf_ms/exec_cnt) if exec_cnt else 0.0,
+                "ready_rate": (ready_cnt / total * 100.0) if total else 0.0,
+                "exec_rate": (exec_cnt / total * 100.0) if total else 0.0,
+                "avg_ttf_ms": (ttf_ms / exec_cnt) if exec_cnt else 0.0,
             }
         except Exception:
-            return {"count":0,"ready_rate":0.0,"exec_rate":0.0,"avg_ttf_ms":0.0}
+            return {"count": 0, "ready_rate": 0.0, "exec_rate": 0.0, "avg_ttf_ms": 0.0}
 
     kpi = {
         "equity": equity,
@@ -119,4 +189,3 @@ def compute_kpi_snapshot(state) -> Dict:
     mon["kpi"] = kpi
     state.set_monitor_state(mon)
     return kpi
-

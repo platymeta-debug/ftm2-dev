@@ -9,6 +9,13 @@
 # YYYY-MM-DD vX.Y.Z
 # - feat(scope): 한글 요약 …
 #
+2025-09-30 v0.4.0
+- feat(risk): RiskEngine v1.5 — ATR/R-unit/상관캡/데일리컷/쿨다운
+- feat(gates): GateKeeper — 레짐/구름일관성/두께/트위스트/포지션충돌/재진입쿨다운
+- feat(exec): Executor — 분석→게이트→사이징→라우터 연결 + KPI 트리거 + Alerts 채널 티켓 알림
+- feat(kpi): KPIEngine — 이벤트 트리거 캐시/요약 스냅샷
+- feat(panel): PanelTuner — IK/게이트/전략 파라미터 DB저장·핫리로드 콜백
+
 # 2025-09-30 v0.3.10
 - feat(connector): Binance USDⓈ-M 클라이언트 — 듀얼 모드 ENV 토글, REST/WS 통합, 주문·취소 표준화
 - feat(streams): StreamManager — 완료봉·시계열 스냅샷 유지 및 계정/마크 동시 반영, 스큐/역전 필터
