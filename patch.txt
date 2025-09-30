@@ -20,10 +20,12 @@
 - feat(forecast): 4h 레짐 가중 앙상블 → score·P(상승)·stance/readiness·gate 산출
 - feat(report): 디스코드 카드 개편(P(상승)·레짐·계획/보호/쿨다운 섹션)
 
+
 2025-09-30 v0.3.7
 - feat(features): Ichimoku(9,26,52) 다중-TF 피처 — pos_vs_cloud/두께/트위스트/자석거리/치코우
 - feat(forecast): IMK 컴포넌트 추가 + 레짐 적응 가중 + Ichimoku 게이트(cloud_consistency/thick/twist)
 - feat(report): ☁️ 구름 요약 라인(위/내/아래·두께·트위스트) 헤더에 표시
+
 
 # M2 이후 릴리스 예시 템플릿(참고용):
 # 2025-09-03 v0.2.0

@@ -15,6 +15,7 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+
 def _env_int(key: str, default: int) -> int:
     raw = os.getenv(key)
     if raw in (None, ""):
@@ -43,6 +44,7 @@ IK_THICK_PCT = _env_float("IK_THICK_PCT", 0.90)
 IK_TWIST_GUARD = _env_int("IK_TWIST_GUARD", 6)
 
 
+
 def _load_thresholds() -> Dict[str, Dict[str, float]]:
     base = {
         "UP": {"enter": 0.35, "exit": -0.25},
@@ -50,6 +52,7 @@ def _load_thresholds() -> Dict[str, Dict[str, float]]:
         "FLAT": {"enter": 0.55, "exit": -0.10},
     }
     for regime in base:
+
         enter_env = os.getenv(f"SC_{regime}_ENTER")
         exit_env = os.getenv(f"SC_{regime}_EXIT")
         if enter_env:
@@ -60,6 +63,7 @@ def _load_thresholds() -> Dict[str, Dict[str, float]]:
         if exit_env:
             try:
                 base[regime]["exit"] = float(exit_env)
+
             except Exception:
                 pass
     return base
@@ -85,14 +89,18 @@ def _clip(x: float, low: float, high: float) -> float:
 
 
 class Forecaster:
+
     """Forecast ensemble that blends multi-timeframe features with regime and Ichimoku context."""
+
 
     def __init__(self, features: Dict[str, Dict[str, dict]], regime_map: Dict[str, dict]):
         self.features = features
         self.regime_map = regime_map
 
     # [ANCHOR:SCORING]
+
     def _component_scores_basic(self, f5: dict, f15: dict, f1h: dict, f4h: dict) -> Dict[str, float]:
+
         mom = 0.0
         if f5 and f15:
             mom = 0.6 * _clip(f15.get("ema_spread", 0.0), -0.01, 0.01)
@@ -112,13 +120,16 @@ class Forecaster:
 
         vol_pen = 0.0
         if f4h:
+
             rv = f4h.get("rv_pr", f4h.get("pr_rv20", 0.5))
+
             if rv > 0.85:
                 vol_pen = -0.10
             elif rv > 0.75:
                 vol_pen = -0.05
 
         return {"mom": mom, "meanrev": mr, "breakout": brk, "vol": vol_pen}
+
 
     # [ANCHOR:IMK_COMPONENT]
     def _component_ichimoku(
@@ -216,6 +227,7 @@ class Forecaster:
             "imk_parts": {"tk": tk, "pos": pos, "kumo": kumo, "chikou": chik, "slope": slope, "magnet": magnet},
         }
 
+
     def forecast_symbol(self, sym: str, horizon_k: int = 12) -> dict:
         feats = self.features.get(sym, {})
         f5 = feats.get("5m", {})
@@ -227,6 +239,7 @@ class Forecaster:
             return {"symbol": sym, "readiness": "BLOCKED", "reason": "insufficient_features"}
 
         regime = self.regime_map.get(sym, {"trend": "FLAT", "vol": "LOW"})
+
         basic = self._component_scores_basic(f5, f15, f1h, f4h)
         ichimoku = self._component_ichimoku(f5, f15, f1h, f4h, regime.get("trend", "FLAT"))
 
@@ -243,6 +256,7 @@ class Forecaster:
             score += 0.10
         elif trend == "DOWN":
             score -= 0.10
+
 
         p_up = _sigmoid(3.0 * score)
 
@@ -308,6 +322,7 @@ class Forecaster:
             "imk_parts": {k: round(v, 4) for k, v in ichimoku["imk_parts"].items()},
         }
 
+
         return {
             "symbol": sym,
             "tf": "5m",
@@ -337,4 +352,5 @@ __all__ = [
     "W_BRK",
     "W_IMK",
 ]
+
 
