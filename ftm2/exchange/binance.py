@@ -257,6 +257,14 @@ class BinanceClient:
             )
         return out
 
+    # [ANCHOR:SET_LEVERAGE]
+    def set_leverage(self, symbol: str, leverage: int) -> dict:
+        payload = {"symbol": symbol.upper(), "leverage": int(leverage)}
+        resp = self._r("POST", "/fapi/v1/leverage", payload, auth=True)
+        if not resp.ok:
+            raise RuntimeError(f"leverage_set_fail:{resp.code}:{resp.msg}")
+        return resp.data or {}
+
     # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------

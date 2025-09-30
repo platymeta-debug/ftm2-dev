@@ -46,3 +46,40 @@ class Alerts:
             f"• ts: <t:{int(time.time())}:T>"
         )
         _post_channel_message(self.chan, msg)
+
+    # [ANCHOR:DISCORD_CONFIG_ALERTS]
+    def config_profile(self, level: int, envs: dict) -> None:
+        keys = [
+            "RISK_TARGET_PCT",
+            "EXEC_SLIPPAGE_BPS",
+            "REENTER_COOLDOWN_S",
+            "IK_TWIST_GUARD",
+            "IK_THICK_PCT",
+            "W_IMK",
+            "SC_W_TREND",
+            "SC_W_MR",
+            "CORR_CAP_PER_SIDE",
+            "DAILY_MAX_LOSS_PCT",
+            "REGIME_ALIGN_MODE",
+        ]
+        brief = ", ".join([f"{k}={envs.get(k)}" for k in keys if k in envs])
+        _post_channel_message(
+            self.chan,
+            f"**[CONFIG] Risk profile={level} 적용**\n{brief}",
+        )
+
+    def config_leverage(
+        self, symbol: str, value: int, ok: bool, err: str | None = None
+    ) -> None:
+        if ok:
+            _post_channel_message(
+                self.chan, f"**[CONFIG] Leverage {symbol} → {value}x (OK)**"
+            )
+        else:
+            _post_channel_message(
+                self.chan,
+                f"**[CONFIG] Leverage {symbol} → {value}x (FAIL)**\n`{err}`",
+            )
+
+    def config_announce(self, line: str) -> None:
+        _post_channel_message(self.chan, f"[CONFIG] {line}")
