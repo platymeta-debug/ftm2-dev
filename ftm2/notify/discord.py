@@ -17,9 +17,26 @@ def _post_channel_message(channel_id: int, content: str) -> None:
     url = f"{API_BASE}/channels/{channel_id}/messages"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
     data = {"content": content}
-    resp = requests.post(url, headers=headers, json=data, timeout=10)
-    if resp.status_code >= 300:
-        raise RuntimeError(f"discord_post_fail {resp.status_code} {resp.text}")
+    backoff = 0.7
+    for attempt in range(3):
+        resp = requests.post(url, headers=headers, json=data, timeout=10)
+        if resp.status_code == 429:
+            try:
+                retry_after = float((resp.json() or {}).get("retry_after", backoff))
+            except Exception:
+                retry_after = backoff
+            time.sleep(retry_after)
+            backoff *= 2
+            continue
+        if resp.status_code >= 300:
+            if attempt == 2:
+                raise RuntimeError(
+                    f"discord_post_fail {resp.status_code} {resp.text}"
+                )
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        return
 
 
 # [ANCHOR:DISCORD_ALERTS]

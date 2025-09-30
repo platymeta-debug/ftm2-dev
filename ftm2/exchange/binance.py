@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.parse as up
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -89,11 +89,12 @@ class BinanceClient:
         self._ws_stop = threading.Event()
         self._ws = None
         self._poll_ctl: Optional[queue.Queue] = None
+        self._filters_cache: Dict[str, Dict[str, float]] = {}
 
     # ------------------------------------------------------------------
     # REST helpers
     # ------------------------------------------------------------------
-    def _resolve_credentials(self, api_key: Optional[str], api_secret: Optional[str]) -> tuple[str, str]:
+    def _resolve_credentials(self, api_key: Optional[str], api_secret: Optional[str]) -> Tuple[str, str]:
         if api_key and api_secret:
             return api_key, api_secret
 
@@ -133,33 +134,69 @@ class BinanceClient:
             params.update({"timestamp": _now_ms(), "recvWindow": self.recv})
             params = self._sign(params)
             headers["X-MBX-APIKEY"] = self.key
-        try:
-            if method == "GET":
-                r = requests.get(url, params=params, headers=headers, timeout=self.timeout)
-            elif method == "POST":
-                r = requests.post(url, params=params, headers=headers, timeout=self.timeout)
-            elif method == "DELETE":
-                r = requests.delete(url, params=params, headers=headers, timeout=self.timeout)
-            else:
-                raise ValueError(method)
-            if r.status_code == 429:
-                log.warning("BX.REST.RATE_LIMIT %s", r.text)
-            r.raise_for_status()
-            data = r.json() if r.text else None
-            return _Resp(True, data)
-        except requests.RequestException as exc:
-            txt = getattr(exc.response, "text", str(exc))
-            log.error("BX.REST.FAIL %s %s %s", method, path, txt)
-            code = None
-            msg = str(txt)
-            if getattr(exc, "response", None) is not None:
-                try:
-                    payload = exc.response.json()
-                    code = payload.get("code")
-                    msg = payload.get("msg", msg)
-                except Exception:
-                    pass
-            return _Resp(False, None, code=code, msg=msg)
+        last_code: Optional[int] = None
+        last_msg = ""
+        for attempt in range(3):
+            try:
+                if method == "GET":
+                    r = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                elif method == "POST":
+                    r = requests.post(url, params=params, headers=headers, timeout=self.timeout)
+                elif method == "DELETE":
+                    r = requests.delete(url, params=params, headers=headers, timeout=self.timeout)
+                else:
+                    raise ValueError(method)
+                if r.status_code == 429:
+                    log.warning("BX.REST.RATE_LIMIT attempt=%d %s", attempt + 1, r.text)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                data = r.json() if r.text else None
+                return _Resp(True, data)
+            except requests.RequestException as exc:
+                txt = getattr(exc.response, "text", str(exc))
+                log.error("BX.REST.FAIL %s %s %s", method, path, txt)
+                last_msg = str(txt)
+                if getattr(exc, "response", None) is not None:
+                    try:
+                        payload = exc.response.json()
+                        last_code = payload.get("code")
+                        last_msg = payload.get("msg", last_msg)
+                    except Exception:
+                        pass
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+        return _Resp(False, None, code=last_code, msg=last_msg)
+
+    # [ANCHOR:SYMBOL_FILTERS]
+    def get_symbol_filters(self, symbol: str) -> Dict[str, float]:
+        """LOT_SIZE.stepSize, PRICE_FILTER.tickSize, MIN_NOTIONAL 등을 캐시해 반환"""
+        sym = symbol.upper()
+        if sym in self._filters_cache:
+            return self._filters_cache[sym]
+
+        info = self.get_exchange_info()
+        step = 1e-6
+        tick = 1e-6
+        min_qty = 0.0
+        min_notional = 0.0
+        for s in (info.get("symbols") or []):
+            if (s.get("symbol") or "").upper() != sym:
+                continue
+            for f in (s.get("filters") or []):
+                ftype = f.get("filterType")
+                if ftype == "LOT_SIZE":
+                    step = float(f.get("stepSize", step))
+                    min_qty = float(f.get("minQty", min_qty))
+                elif ftype == "PRICE_FILTER":
+                    tick = float(f.get("tickSize", tick))
+                elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
+                    min_notional = float(f.get("minNotional", f.get("notional", min_notional)))
+            break
+        out = {"stepSize": step, "tickSize": tick, "minQty": min_qty, "minNotional": min_notional}
+        self._filters_cache[sym] = out
+        return out
 
     # ------------------------------------------------------------------
     # Public market/account
