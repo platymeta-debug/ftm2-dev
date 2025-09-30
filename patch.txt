@@ -9,6 +9,11 @@
 # YYYY-MM-DD vX.Y.Z
 # - feat(scope): 한글 요약 …
 #
+2025-10-01 v0.4.6
+- feat(db): config KV 확장 + idem_keys 테이블(중복 주문 방지, 원자적 예약)
+- feat(exec): 라우터 주문 전 DB 기반 idem 예약 + 심볼별 슬리피지 허용(bps) 우선순위(DB per-symbol > DB wildcard > ENV)
+- feat(panel): /slip 심볼별 슬리피지 bps 설정 커맨드(Alerts 공지)
+
 2025-10-01 v0.4.4
 - feat(ops): HotReload 콜백 — env.* 변경 즉시 엔진 반영(+Alerts 공지)
 - feat(risk): RiskProfileApplier — 공격성(1~10) → 파라미터 맵핑 일괄 적용(DB 저장·핫리로드)

@@ -4,6 +4,7 @@ from typing import Dict
 import time
 import logging
 
+from ftm2.trade.idem import tf_ms
 from ftm2.trade.router import OrderRouter, Target
 from ftm2.risk.engine import RiskEngine
 from ftm2.risk.gates import GateKeeper
@@ -72,7 +73,18 @@ class Executor:
             meta={"link_id": None},
         )
 
-        result = self.router.submit(target, tf_bar_ts=int(time.time() // 60 * 60 * 1000))
+        anchor_tf = forecast.get("tf", "5m")
+        bar_ts = forecast.get("bar_ts")
+        try:
+            bar_ts = int(bar_ts) if bar_ts is not None else None
+        except (TypeError, ValueError):
+            bar_ts = None
+        if bar_ts is None:
+            span = max(tf_ms(anchor_tf), 1)
+            now_ms = int(time.time() * 1000)
+            bar_ts = now_ms - (now_ms % span)
+
+        result = self.router.submit(target, anchor_tf=anchor_tf, tf_bar_ts=bar_ts)
         attempt_evt = {
             "type": "order_attempt",
             "symbol": symbol,

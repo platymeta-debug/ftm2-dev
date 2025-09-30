@@ -8,7 +8,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from ftm2.db.core import config_get, idem_reserve
 from ftm2.exchange.binance import BinanceClient
+from ftm2.trade.idem import make_idem_key, tf_ms
 
 log = logging.getLogger("ftm2.exec")
 
@@ -43,7 +45,7 @@ class OrderRouter:
     def __init__(self, cli: BinanceClient) -> None:
         self.cli = cli
         self._last_submit_ts = 0.0
-        self._idem_bar_key: set[str] = set()
+        self.idem_grace_ms = 5_000  # allow slight drift beyond bar close
 
     def _cooldown_ok(self) -> bool:
         now = time.time()
@@ -86,42 +88,67 @@ class OrderRouter:
             ],
         }
 
-    def _slip_ok(self, ref_px: Optional[float], mkt_px: float) -> bool:
+    def _allowed_slip_bps(self, symbol: str) -> float:
+        sym = symbol.upper()
+        for key in (f"slippage.bps.{sym}", "slippage.bps.*"):
+            raw = config_get(key, None)
+            if raw is None:
+                continue
+            try:
+                return float(raw)
+            except Exception:
+                log.debug("SLIP.CONFIG.INVALID key=%s value=%s", key, raw)
+                continue
+        return EXEC_SLIPPAGE_BPS
+
+    def _slip_ok(self, ref_px: Optional[float], mkt_px: float, allowed_bps: float) -> bool:
         if ref_px is None or ref_px == 0:
             return True
         bps = abs(mkt_px - ref_px) / ref_px * 1e4
-        return bps <= EXEC_SLIPPAGE_BPS
+        return bps <= allowed_bps
 
-    def submit(self, target: Target, tf_bar_ts: Optional[int] = None) -> dict:
+    def submit(
+        self,
+        target: Target,
+        anchor_tf: str = "5m",
+        tf_bar_ts: Optional[int] = None,
+    ) -> dict:
         """Submit a market order with idem check and retry logic."""
         if not self._cooldown_ok():
             return {"status": "skipped", "reason": "cooldown"}
 
-        idem_key: Optional[str] = None
-        if tf_bar_ts is not None:
-            idem_key = f"{target.symbol}:{tf_bar_ts}:{target.side}:{target.action}"
-            if idem_key in self._idem_bar_key:
-                log.info("ORD.DUPLICATE %s", idem_key)
-                return {"status": "skipped", "reason": "duplicate_bar"}
-            self._idem_bar_key.add(idem_key)
+        sym = target.symbol.upper()
+        side = "BUY" if target.side.upper().startswith("B") else "SELL"
 
         try:
-            mark = self.cli.get_mark_price(target.symbol)
+            mark = self.cli.get_mark_price(sym)
             mark_px = float(mark["markPrice"])
         except Exception as exc:
             log.error("ORD.MARK_FAIL %s", exc)
             return {"status": "rejected", "reason": "mark_fail"}
 
-        if not self._slip_ok(target.px, mark_px):
+        allowed_bps = self._allowed_slip_bps(sym)
+        if not self._slip_ok(target.px, mark_px, allowed_bps):
             log.warning(
                 "ORD.SKIP.SLIPPAGE ref=%.8f m=%.8f bps>%.1f",
                 target.px,
                 mark_px,
-                EXEC_SLIPPAGE_BPS,
+                allowed_bps,
             )
-            return {"status": "skipped", "reason": "slippage"}
+            return {"status": "skipped", "reason": "slippage_sym"}
 
-        filt = self._apply_filters(target.symbol, target.qty, mark_px)
+        span_ms = max(tf_ms(anchor_tf), 1)
+        if tf_bar_ts is None:
+            now_ms = int(time.time() * 1000)
+            tf_bar_ts = now_ms - (now_ms % span_ms)
+        stance = "LONG" if side == "BUY" else "SHORT"
+        idem_key = make_idem_key(sym, stance, anchor_tf, tf_bar_ts)
+        ttl_ms = span_ms + self.idem_grace_ms
+        if not idem_reserve(idem_key, sym, side, anchor_tf, tf_bar_ts, ttl_ms):
+            log.info("ORD.SKIP.IDEM %s", idem_key)
+            return {"status": "skipped", "reason": "duplicate_bar"}
+
+        filt = self._apply_filters(sym, target.qty, mark_px)
         if not filt["ok"] or filt["qty"] <= 0:
             return {
                 "status": "skipped",
@@ -130,7 +157,6 @@ class OrderRouter:
 
         qty = filt["qty"]
 
-        side = "BUY" if target.side.upper().startswith("B") else "SELL"
         client_id = (target.meta or {}).get("link_id") or f"ftm2.{uuid.uuid4().hex[:20]}"
 
         attempt = 0
@@ -138,7 +164,7 @@ class OrderRouter:
             attempt += 1
             try:
                 order = self.cli.create_order(
-                    symbol=target.symbol,
+                    symbol=sym,
                     side=side,
                     type="MARKET",
                     qty=qty,

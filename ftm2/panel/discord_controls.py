@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Callable, Dict
 import logging
 import os
-import sqlite3
-import time
 
 try:
     import discord  # discord.py 2.x
@@ -13,6 +11,7 @@ except Exception:  # pragma: no cover - optional dependency
     discord = None  # type: ignore
 
 from ftm2.exchange.binance import BinanceClient
+from ftm2.db.core import config_get, config_set, get_conn
 from ftm2.notify.discord import Alerts
 from ftm2.ops.hotreload import HotReloader
 from ftm2.risk.profile import RiskProfileApplier
@@ -23,42 +22,19 @@ log = logging.getLogger("ftm2.panel")
 class ConfigStore:
     def __init__(self, db_path: str = "ftm2.sqlite3") -> None:
         self.db = db_path
-        self._init()
-
-    def _init(self) -> None:
-        con = sqlite3.connect(self.db)
-        cur = con.cursor()
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT, ts INTEGER)"
-        )
-        con.commit()
-        con.close()
+        get_conn(db_path)
 
     def set(self, k: str, v: str) -> None:
-        con = sqlite3.connect(self.db)
-        cur = con.cursor()
-        cur.execute(
-            "INSERT INTO config(k,v,ts) VALUES(?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, ts=excluded.ts",
-            (k, v, int(time.time())),
-        )
-        con.commit()
-        con.close()
+        config_set(k, str(v))
 
     def get(self, k: str, default=None):
-        con = sqlite3.connect(self.db)
-        cur = con.cursor()
-        cur.execute("SELECT v FROM config WHERE k=?", (k,))
-        row = cur.fetchone()
-        con.close()
-        return row[0] if row else default
+        return config_get(k, default)
 
     def dump(self) -> Dict:
-        con = sqlite3.connect(self.db)
-        cur = con.cursor()
-        cur.execute("SELECT k,v FROM config")
+        conn = get_conn(self.db)
+        cur = conn.execute("SELECT key, val FROM config")
         rows = cur.fetchall()
-        con.close()
-        return {k: v for k, v in rows}
+        return {row[0]: row[1] for row in rows}
 
 
 # [ANCHOR:PANEL_TUNER]
@@ -169,6 +145,21 @@ class PanelApp:
                     f"❌ leverage set fail: {exc}", ephemeral=True
                 )
 
+        @self.tree.command(name="slip", description="심볼별 슬리피지 허용 bps 설정")
+        @app_commands.describe(symbol="예: BTCUSDT", value="bps (예 7)")
+        async def slip_cmd(inter: discord.Interaction, symbol: str, value: float):
+            sym = symbol.upper()
+            try:
+                bps = float(value)
+            except (TypeError, ValueError):
+                await inter.response.send_message("❌ invalid bps value", ephemeral=True)
+                return
+            config_set(f"slippage.bps.{sym}", str(bps))
+            self.alerts.config_announce(f"slippage.bps.{sym} → {bps}")
+            await inter.response.send_message(
+                f"slippage {sym} = {bps} bps", ephemeral=True
+            )
+
         @self.tree.command(name="panel", description="리스크/레버리지 버튼 패널 표시")
         @app_commands.describe(symbol="레버리지 조절할 심볼")
         async def panel_cmd(inter: discord.Interaction, symbol: str):
@@ -248,11 +239,17 @@ class PanelApp:
         sym = symbol.upper()
         lvl = int(self.store.get("profile.level", "5") or "5")
         lev = int(self.store.get(f"lev.{sym}", "5") or "5")
+        bps_val = config_get(
+            f"slippage.bps.{sym}",
+            config_get("slippage.bps.*", os.getenv("EXEC_SLIPPAGE_BPS", "6")),
+        )
+        bps = bps_val if bps_val is not None else os.getenv("EXEC_SLIPPAGE_BPS", "6")
         return (
             "**Risk/Leverage Panel**\n"
             f"• Symbol: `{sym}`\n"
             f"• Risk Level: `{lvl}` (1=보수 ←→ 10=공격)\n"
             f"• Leverage: `{lev}x`\n"
+            f"• Slippage: `{bps} bps`\n"
             "버튼으로 값 변경 시 DB 저장→핫리로드→Alerts 공지"
         )
 
