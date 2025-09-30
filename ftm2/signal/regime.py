@@ -271,3 +271,106 @@ class RegimeClassifier:
                     rv_pr,
                 )
     # [ANCHOR:REGIME_UPDATE] end
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+TH_UP_SPREAD = _env_float("REG_EMA_SPREAD_UP", +0.0015)
+TH_DN_SPREAD = _env_float("REG_EMA_SPREAD_DN", -0.0015)
+TH_UP_SLOPE = _env_float("REG_EMA_SLOPE_UP", +0.0004)
+TH_DN_SLOPE = _env_float("REG_EMA_SLOPE_DN", -0.0004)
+TH_RV_HI = _env_float("REG_RV_PR_HI", 0.60)
+TH_RV_LO = _env_float("REG_RV_PR_LO", 0.40)
+HYST = _env_float("REG_HYST", 0.25)
+
+
+def _split_prev(prev: Optional[str]) -> Tuple[str, str]:
+    if not prev:
+        return ("FLAT", "LOW")
+    if ";" in prev:
+        trend, vol = prev.split(";", 1)
+    else:
+        trend, vol = prev, "LOW"
+    trend = trend.replace("TREND_", "").upper()
+    vol = vol.replace("VOL_", "").upper()
+    return (trend or "FLAT", vol or "LOW")
+
+
+class Regime:
+    """Lightweight 4h regime classifier used by scoring/report pipeline."""
+
+    def __init__(self) -> None:
+        self.last: Dict[str, str] = {}
+
+    # [ANCHOR:REGIME]
+    def classify(self, features_4h: Dict[str, Any], prev: Optional[str] = None) -> Dict[str, Any]:
+        if not features_4h:
+            return {
+                "code": "TREND_FLAT;VOL_LOW",
+                "label": "〰️🫧",
+                "trend": "FLAT",
+                "vol": "LOW",
+                "ema_spread": 0.0,
+                "ema_slope": 0.0,
+                "rv_pr": 0.5,
+            }
+
+        spread = float(features_4h.get("ema_spread", 0.0))
+        slope = float(features_4h.get("ema_slope", 0.0))
+        rv_pr = float(features_4h.get("pr_rv20", features_4h.get("rv_pr", 0.5)))
+
+        prev_trend, prev_vol = _split_prev(prev)
+
+        trend = "FLAT"
+        if spread > TH_UP_SPREAD or slope > TH_UP_SLOPE:
+            trend = "UP"
+        elif spread < TH_DN_SPREAD or slope < TH_DN_SLOPE:
+            trend = "DOWN"
+
+        hold_band = HYST * max(abs(TH_UP_SPREAD), abs(TH_DN_SPREAD), abs(TH_UP_SLOPE), abs(TH_DN_SLOPE))
+        if prev_trend == "UP" and trend == "FLAT":
+            if spread > TH_UP_SPREAD - hold_band or slope > TH_UP_SLOPE - hold_band:
+                trend = "UP"
+        if prev_trend == "DOWN" and trend == "FLAT":
+            if spread < TH_DN_SPREAD + hold_band or slope < TH_DN_SLOPE + hold_band:
+                trend = "DOWN"
+
+        vol = "LOW"
+        if rv_pr >= TH_RV_HI:
+            vol = "HIGH"
+        elif rv_pr <= TH_RV_LO:
+            vol = "LOW"
+        else:
+            vol = prev_vol if prev_vol in {"HIGH", "LOW"} else "LOW"
+
+        vol_band = HYST * abs(TH_RV_HI - TH_RV_LO)
+        if prev_vol == "HIGH" and vol == "LOW" and rv_pr > TH_RV_HI - vol_band:
+            vol = "HIGH"
+        if prev_vol == "LOW" and vol == "HIGH" and rv_pr < TH_RV_LO + vol_band:
+            vol = "LOW"
+
+        code = f"TREND_{trend};VOL_{vol}"
+        label = {"UP": "📈", "DOWN": "📉", "FLAT": "〰️"}[trend] + ("⚡" if vol == "HIGH" else "🫧")
+        return {
+            "code": code,
+            "label": label,
+            "trend": trend,
+            "vol": vol,
+            "ema_spread": spread,
+            "ema_slope": slope,
+            "rv_pr": rv_pr,
+        }
+
+    def update(self, sym: str, features_4h: Dict[str, Any]) -> Dict[str, Any]:
+        prev = self.last.get(sym)
+        regime = self.classify(features_4h, prev)
+        self.last[sym] = f"{regime['trend']};{regime['vol']}"
+        return regime

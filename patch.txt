@@ -14,6 +14,12 @@
 - feat(streams): StreamManager — 완료봉·시계열 스냅샷 유지 및 계정/마크 동시 반영, 스큐/역전 필터
 - feat(exec): OrderRouter — idem/link_id/쿨다운/슬리피지/재시도 가드 및 reduceOnly 대응
 
+2025-09-30 v0.3.6
+- feat(features): 다중 TF(5m/15m/1h/4h) 파이프라인 + ATR/RV/zscore/ADX/Donchian/BBW
+- feat(regime): 4h 레짐 분류(UP/DOWN/FLAT × HIGH/LOW) + 히스테리시스/라벨링
+- feat(forecast): 4h 레짐 가중 앙상블 → score·P(상승)·stance/readiness·gate 산출
+- feat(report): 디스코드 카드 개편(P(상승)·레짐·계획/보호/쿨다운 섹션)
+
 # M2 이후 릴리스 예시 템플릿(참고용):
 # 2025-09-03 v0.2.0
 # - feat(features): 피처 파이프라인 1차(지표 계산/NaN 처리/퍼센타일 캐시)
