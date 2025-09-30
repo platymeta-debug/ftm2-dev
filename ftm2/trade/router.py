@@ -1,393 +1,135 @@
-# -*- coding: utf-8 -*-
-"""
-Order Router: targets -> orders (dry-run by default)
-- LOT_SIZE step, MIN_NOTIONAL 준수
-- cooldown / tolerance
-- reduceOnly 처리
-"""
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, Tuple, List, Any, Optional
+
+import logging
 import math
 import os
 import time
 import uuid
-import logging
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
-try:
-    from ftm2.exchange.binance import BinanceClient
-except Exception:
-    from exchange.binance import BinanceClient  # type: ignore
+from ftm2.exchange.binance import BinanceClient
 
 log = logging.getLogger("ftm2.exec")
-if not log.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+EXEC_COOLDOWN = _env_float("EXEC_COOLDOWN_S", 1.0)
+EXEC_SLIPPAGE_BPS = _env_float("EXEC_SLIPPAGE_BPS", 5.0)
+EXEC_MAX_RETRY = int(os.getenv("EXEC_MAX_RETRY", "3"))
+
 
 @dataclass
-class ExecConfig:
-    active: bool = False          # 실주문 on/off
-    cooldown_s: float = 5.0       # 심볼별 최소 간격
-    tol_rel: float = 0.05         # |delta| < |target|*tol_rel 이면 skip
-    tol_abs: float = 0.0          # |delta| < tol_abs 이면 skip
-    order_type: str = "MARKET"
-    reduce_only: bool = True      # 청산·감소는 reduceOnly
+class Target:
+    symbol: str
+    side: str  # BUY | SELL
+    action: str  # ENTER | ADD | REDUCE | EXIT
+    qty: float
+    px: Optional[float] = None
+    reduce_only: bool = False
+    meta: Dict[str, Any] | None = None
 
-def _round_step(x: float, step: float) -> float:
-    if step <= 0: return x
-    # binance step은 소수 1e-? 형태가 많음 → 반올림 오차 방지
-    k = round(x / step)
-    return k * step
 
-# [ANCHOR:ORDER_ROUTER]
 class OrderRouter:
-    def __init__(self, client: BinanceClient, cfg: ExecConfig) -> None:
-        self.cli = client
-        self.cfg = cfg
-        self._last_sent_ms: Dict[str, int] = {}  # sym -> epoch_ms
-        self._meta: Dict[str, Dict[str, float]] = {}  # sym -> {step,min_notional}
-        self._warm = False
-        self.log = log
-        try:
-            self.retry_delay = float(os.getenv("EXEC_COOLDOWN_S", str(self.cfg.cooldown_s)))
-        except Exception:
-            self.retry_delay = self.cfg.cooldown_s
-        try:
-            self.exec_retry = max(0, int(os.getenv("EXEC_RETRY", "1")))
-        except Exception:
-            self.exec_retry = 1
+    def __init__(self, cli: BinanceClient) -> None:
+        self.cli = cli
+        self._last_submit_ts = 0.0
+        self._idem_bar_key: set[str] = set()
 
-    # ---- exchange meta ----
-    def _ensure_meta(self, symbols: List[str]) -> None:
-        if self._warm:
-            return
-        r = self.cli.exchange_info(symbols)
-        if not r.get("ok"):
-            log.warning("[EXEC] exchangeInfo 실패: %s", r.get("error"))
-            # 기본값 보수적으로
-            for s in symbols:
-                self._meta.setdefault(s, {"step": 0.001, "min_notional": 5.0})
-            self._warm = True
-            return
-        info = r["data"]
-        arr = info.get("symbols") or []
-        for si in arr:
-            sym = si.get("symbol")
-            step = 0.001
-            min_notional = 5.0
-            for f in si.get("filters", []):
-                ft = f.get("filterType")
-                if ft == "LOT_SIZE":
-                    try:
-                        step = float(f.get("stepSize", step))
-                    except Exception:
-                        pass
-                # 선물은 'MIN_NOTIONAL' 또는 'NOTIONAL' 형식이 존재
-                if ft in ("MIN_NOTIONAL", "NOTIONAL"):
-                    try:
-                        mn = f.get("minNotional") or f.get("notional")
-                        if mn is not None:
-                            min_notional = float(mn)
-                    except Exception:
-                        pass
-                # 일부 선물은 MARKET_LOT_SIZE만 노출되기도 함 → 보조
-                if ft == "MARKET_LOT_SIZE" and step == 0.001:
-                    try:
-                        step = float(f.get("stepSize", step))
-                    except Exception:
-                        pass
-            self._meta[sym] = {"step": step, "min_notional": min_notional}
-        self._warm = True
+    def _cooldown_ok(self) -> bool:
+        now = time.time()
+        if now - self._last_submit_ts < EXEC_COOLDOWN:
+            log.info("ORD.SKIP.COOLDOWN %.2fs", EXEC_COOLDOWN - (now - self._last_submit_ts))
+            return False
+        self._last_submit_ts = now
+        return True
 
-    # ---- plan & send ----
-    def _too_soon(self, sym: str) -> bool:
-        last = self._last_sent_ms.get(sym, 0)
-        return (time.time() * 1000 - last) < (self.cfg.cooldown_s * 1000)
+    def _qty_round(self, qty: float) -> float:
+        step = 1e-6
+        return math.floor(qty / step) * step
 
-    def _skip_tolerance(self, delta: float, target: float) -> bool:
-        if abs(delta) < self.cfg.tol_abs:
+    def _slip_ok(self, ref_px: Optional[float], mkt_px: float) -> bool:
+        if ref_px is None or ref_px == 0:
             return True
-        if abs(target) > 0 and abs(delta) < abs(target) * self.cfg.tol_rel:
-            return True
-        return False
+        bps = abs(mkt_px - ref_px) / ref_px * 1e4
+        return bps <= EXEC_SLIPPAGE_BPS
 
-    def _link_id(self) -> str:
-        return f"ftm2-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+    def submit(self, target: Target, tf_bar_ts: Optional[int] = None) -> dict:
+        """Submit a market order with idem check and retry logic."""
+        if not self._cooldown_ok():
+            return {"status": "skipped", "reason": "cooldown"}
 
-    def _dispatch_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload)
-        base_id = data.get("newClientOrderId") or self._link_id()
-        last_resp: Optional[Dict[str, Any]] = None
-        for attempt in range(self.exec_retry + 1):
-            if attempt == 0:
-                data["newClientOrderId"] = base_id
-            else:
-                data["newClientOrderId"] = f"{base_id}-r{attempt}"
-            resp = self.cli.create_order(data)
-            if resp.get("ok"):
-                return resp
-            last_resp = resp
-            err = resp.get("error") or {}
-            self.log.warning(
-                "[EXEC][ORDER_FAIL] symbol=%s side=%s try=%d code=%s msg=%s",
-                data.get("symbol"),
-                data.get("side"),
-                attempt,
-                err.get("code"),
-                err.get("msg"),
+        idem_key: Optional[str] = None
+        if tf_bar_ts is not None:
+            idem_key = f"{target.symbol}:{tf_bar_ts}:{target.side}:{target.action}"
+            if idem_key in self._idem_bar_key:
+                log.info("ORD.DUPLICATE %s", idem_key)
+                return {"status": "skipped", "reason": "duplicate_bar"}
+            self._idem_bar_key.add(idem_key)
+
+        try:
+            mark = self.cli.get_mark_price(target.symbol)
+            mark_px = float(mark["markPrice"])
+        except Exception as exc:
+            log.error("ORD.MARK_FAIL %s", exc)
+            return {"status": "rejected", "reason": "mark_fail"}
+
+        if not self._slip_ok(target.px, mark_px):
+            log.warning(
+                "ORD.SKIP.SLIPPAGE ref=%.8f m=%.8f bps>%.1f",
+                target.px,
+                mark_px,
+                EXEC_SLIPPAGE_BPS,
             )
-            if attempt < self.exec_retry:
-                time.sleep(self.retry_delay)
-        return last_resp or {"ok": False, "error": {"code": "E_EXEC_FAIL", "msg": "order send failed"}}
+            return {"status": "skipped", "reason": "slippage"}
 
-    def _send_adjust(self, sym: str, side: str, qty: float, reduce_only: bool = False, tif: str = "GTC") -> dict:
-        self._ensure_meta([sym])
-        step = (self._meta.get(sym) or {}).get("step", 0.001)
-        qty_r = _round_step(qty, step)
-        if qty_r <= 0:
-            raise ValueError("qty<=0")
-        if not self.cfg.active:
-            self.log.info("[EXEC_DRY] %s %s qty=%s", sym, side, qty_r)
-            return {"ok": True, "dry": True}
-        payload = {
-            "symbol": sym,
-            "side": side,
-            "type": self.cfg.order_type,
-            "quantity": f"{qty_r:.10f}".rstrip("0").rstrip("."),
-            "newClientOrderId": self._link_id(),
-        }
-        if reduce_only:
-            payload["reduceOnly"] = True
-        if tif:
-            payload["timeInForce"] = tif
-        return self._dispatch_order(payload)
+        qty = max(0.0, self._qty_round(target.qty))
+        if qty <= 0:
+            return {"status": "skipped", "reason": "qty_zero"}
 
-    def consume_amt(self, amt):
-        sym = amt["symbol"]
-        plan = amt["plan"]
-        acts = amt["actions"]
-        gates = amt["summary"]["gates"]
-        if not all([gates.get("regime_ok"), gates.get("rv_band_ok"), gates.get("risk_ok"), gates.get("cooldown_ok")]):
-            self.log.info("[EXEC.AMT] DROP %s reason=gates", sym)
-            return
-        for a in acts:
-            side = a["side"]
-            qty = float(a["qty"])
-            if qty <= 0:
-                self.log.info("[EXEC.AMT] DROP %s reason=qty<=0", sym)
-                continue
+        side = "BUY" if target.side.upper().startswith("B") else "SELL"
+        client_id = (target.meta or {}).get("link_id") or f"ftm2.{uuid.uuid4().hex[:20]}"
+
+        attempt = 0
+        while attempt < EXEC_MAX_RETRY:
+            attempt += 1
             try:
-                self.log.info("[EXEC.AMT] SEND %s %s qty=%.6f reason=AMT/READY", sym, side, qty)
-                self._send_adjust(sym, side, qty, reduce_only=a.get("reduce_only", False), tif=plan.get("tif", "GTC"))
-            except Exception as e:
-                self.log.warning("[EXEC.AMT][WARN] %s %s: %s", sym, side, e)
-
-    def sync(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-        intents = snapshot.get("intents") or {}
-        open_orders = snapshot.get("open_orders") or {}
-        positions = snapshot.get("positions") or {}
-        n_int = (
-            sum(len(v) for v in intents.values())
-            if isinstance(intents, dict)
-            else (len(intents) if intents else 0)
-        )
-        n_pos = len([
-            p for p in positions.values()
-            if getattr(p, "positionAmt", 0) or (isinstance(p, dict) and float(p.get("positionAmt", 0)) != 0)
-        ])
-        self.log.info(
-            f"[EXEC.SYNC] read intents={n_int} positions={n_pos} oo={len(open_orders) if isinstance(open_orders, dict) else 0}"
-        )
-
-        symbols = list((snapshot.get("targets") or {}).keys())
-        if not symbols:
-            return []
-        self._ensure_meta(symbols)
-
-        marks = snapshot.get("marks") or {}
-        targets = snapshot.get("targets") or {}
-
-        results: List[Dict[str, Any]] = []
-        for sym, tgt in targets.items():
-            price = float((marks.get(sym) or {}).get("price") or 0.0)
-            pos = float((positions.get(sym) or {}).get("pa") or 0.0)  # positionAmt
-            target_qty = float(tgt.get("target_qty") or 0.0)
-            delta = target_qty - pos
-
-            if self._too_soon(sym):
-                self.log.info(f"[EXEC.DROP] %s reason=COOLDOWN", sym)
-                results.append({
-                    "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
-                    "price": price, "reason": "COOLDOWN", "mode": "DRY" if not self.cfg.active else "LIVE",
-                    "result": None
-                })
-                continue
-
-            if self._skip_tolerance(delta, target_qty):
-                self.log.info(f"[EXEC.DROP] %s reason=TOL", sym)
-                results.append({
-                    "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
-                    "price": price, "reason": "TOL", "mode": "DRY" if not self.cfg.active else "LIVE",
-                    "result": None
-                })
-                continue
-
-            side = "BUY" if delta > 0 else "SELL"
-            step = (self._meta.get(sym) or {}).get("step", 0.001)
-            min_notional = (self._meta.get(sym) or {}).get("min_notional", 5.0)
-            qty_raw = abs(delta)
-            qty = _round_step(qty_raw, step)
-            notional = qty * price
-
-            if qty <= 0.0:
-                self.log.info(f"[EXEC.DROP] %s reason=STEP_ZERO", sym)
-                results.append({
-                    "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
-                    "price": price, "reason": "STEP_ZERO", "mode": "DRY" if not self.cfg.active else "LIVE",
-                    "result": None
-                })
-                continue
-            if price <= 0.0 or notional < min_notional:
-                self.log.info(f"[EXEC.DROP] %s reason=MIN_NOTIONAL", sym)
-                results.append({
-                    "symbol": sym, "side": "SKIP", "delta_qty": delta, "qty_sent": 0.0,
-                    "price": price, "reason": "MIN_NOTIONAL", "mode": "DRY" if not self.cfg.active else "LIVE",
-                    "result": None
-                })
-                continue
-
-            reduce_only = False
-            # 현재 포지션 절대값이 줄어드는 방향이면 reduceOnly
-            if (pos > 0 and side == "SELL") or (pos < 0 and side == "BUY") or target_qty == 0.0:
-                reduce_only = self.cfg.reduce_only
-
-            payload = {
-                "symbol": sym,
-                "side": side,
-                "type": self.cfg.order_type,
-                "quantity": f"{qty:.10f}".rstrip("0").rstrip("."),  # 문자열 권장
-            }
-            if reduce_only:
-                payload["reduceOnly"] = True
-            payload["newClientOrderId"] = self._link_id()
-
-            mode = "LIVE" if self.cfg.active else "DRY"
-            if not self.cfg.active:
-                self.log.info("[EXEC.SEND] %s %s qty=%s px=~%g reason=DRY", sym, side, payload["quantity"], price)
-                self._last_sent_ms[sym] = int(time.time() * 1000)
-                results.append({
-                    "symbol": sym, "side": side, "delta_qty": delta, "qty_sent": qty,
-                    "price": price, "reason": "DRY", "mode": mode, "result": {"ok": True, "dry": True}
-                })
-                continue
-
-            # 실주문: BinanceClient 가 order_active=False 면 스텁에러가 온다 → 그대로 노출
-            r = self._dispatch_order(payload)
-            if r.get("ok"):
-                self.log.info("[EXEC.SEND] %s %s qty=%s px=~%g", sym, side, payload["quantity"], price)
-                self._last_sent_ms[sym] = int(time.time() * 1000)
-            else:
-                self.log.warning("[EXEC_ERR] %s %s %s", sym, side, r.get("error"))
-            results.append({
-                "symbol": sym, "side": side, "delta_qty": delta, "qty_sent": qty,
-                "price": price, "reason": "SENT" if r.get("ok") else "ERR",
-                "mode": mode, "result": r
-            })
-            try:
-                oid = (r.get("data") or {}).get("orderId") or (r.get("orderId"))
-                status = (r.get("data") or {}).get("status") or r.get("status")
-                filled = (r.get("data") or {}).get("executedQty") or r.get("executedQty")
-                self.log.info(
-                    f"[EXEC.RSLT] %s %s status=%s filled=%s", sym, oid, status, filled
+                order = self.cli.create_order(
+                    symbol=target.symbol,
+                    side=side,
+                    type="MARKET",
+                    qty=qty,
+                    price=None,
+                    reduce_only=target.reduce_only,
+                    client_id=client_id,
                 )
-            except Exception:
-                pass
-        return results
+                log.info(
+                    "ORD.SENT %s %s qty=%.8f id=%s",
+                    target.symbol,
+                    side,
+                    qty,
+                    order.get("orderId") if isinstance(order, dict) else None,
+                )
+                return {"status": "sent", "order": order, "link_id": client_id}
+            except Exception as exc:
+                msg = str(exc)
+                retryable_codes = ["-1001", "-1013", "-1021", "-1100", "-2019"]
+                retryable = any(code in msg for code in retryable_codes)
+                if retryable and attempt < EXEC_MAX_RETRY:
+                    log.warning("ORD.RETRYABLE attempt=%d %s", attempt, msg)
+                    time.sleep(0.2 * attempt)
+                    continue
+                log.error("ORD.FATAL %s", msg)
+                return {"status": "rejected", "reason": "fatal", "error": msg}
 
-    def last_sent_ms(self, sym: str) -> Optional[int]:
-        """해당 심볼의 마지막 주문(또는 드라이런 전송) 시각(ms)"""
-        return self._last_sent_ms.get(sym)
-
-    def nudge(self, sym: str) -> None:
-        """쿨다운을 즉시 해제해 다음 루프에서 바로 재시도 가능하게 함"""
-        self._last_sent_ms[sym] = 0
-
-
-    def cancel_open_orders(self, symbol: str, order_id: Optional[str] = None) -> dict:
-        """개별 주문 ID가 주어지면 가능할 때 개별 취소, 아니면 심볼 전체 취소.
-        드라이런이면 로그만 남김."""
-        if not self.cfg.active:
-            log.info("[EXEC_DRY] cancel %s (order_id=%s)", symbol, order_id)
-            return {"ok": True, "dry": True}
-        try:
-            if order_id and hasattr(self.cli, "cancel_order"):
-                return self.cli.cancel_order(symbol, order_id)
-            for name in ("cancel_all_open_orders", "cancel_all_orders", "cancelAllOpenOrders"):
-                if hasattr(self.cli, name):
-                    return getattr(self.cli, name)(symbol)
-            return {"ok": False, "error": "cancel API not available"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-
-    def force_flat(self, symbol: str, qty: Optional[float] = None) -> dict:
-        """현재 포지션을 즉시 0으로 만들기 위한 reduceOnly MARKET.
-        qty 미지정 시 현재 포지션 절대값만큼 시도(스냅샷 필요하므로 지정 권장)."""
-        try:
-            if qty is None:
-                return {"ok": False, "error": "qty required in force_flat (router has no state)"}
-            qstr = f"{qty:.10f}".rstrip("0").rstrip(".")
-            payload_sell = {
-                "symbol": symbol,
-                "side": "SELL",
-                "type": self.cfg.order_type,
-                "quantity": qstr,
-                "reduceOnly": True,
-                "newClientOrderId": self._link_id(),
-            }
-            payload_buy = {
-                "symbol": symbol,
-                "side": "BUY",
-                "type": self.cfg.order_type,
-                "quantity": qstr,
-                "reduceOnly": True,
-                "newClientOrderId": self._link_id(),
-            }
-            if not self.cfg.active:
-                log.warning("[EXEC_DRY][FLAT] %s qty=%s", symbol, qstr)
-                return {"ok": True, "dry": True}
-            rs = self._dispatch_order(payload_sell)
-            rb = self._dispatch_order(payload_buy) if not rs.get("ok") else {"ok": True, "note": "sell-first-ok"}
-            return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    def force_reduce_to(self, symbol: str, target_abs_qty: float) -> dict:
-        """현재 포지션 절대값을 target_abs_qty 이하로 줄이도록 reduceOnly MARKET을 전송."""
-        if target_abs_qty < 0.0:
-            target_abs_qty = 0.0
-        try:
-            if not self.cfg.active:
-                log.warning("[EXEC_DRY][REDUCE_TO] %s → |qty|<=%.10f", symbol, target_abs_qty)
-                return {"ok": True, "dry": True}
-            order_sell = {
-                "symbol": symbol,
-                "side": "SELL",
-                "type": self.cfg.order_type,
-                "quantity": "999999",
-                "reduceOnly": True,
-                "newClientOrderId": self._link_id(),
-            }
-            order_buy = {
-                "symbol": symbol,
-                "side": "BUY",
-                "type": self.cfg.order_type,
-                "quantity": "999999",
-                "reduceOnly": True,
-                "newClientOrderId": self._link_id(),
-            }
-            rs = self._dispatch_order(order_sell)
-            rb = self._dispatch_order(order_buy) if not rs.get("ok") else {"ok": True}
-            return {"ok": bool(rs.get("ok") or rb.get("ok")), "sell": rs, "buy": rb}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        return {"status": "rejected", "reason": "retry_exhausted"}
 
