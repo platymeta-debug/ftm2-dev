@@ -1,1099 +1,434 @@
-# -*- coding: utf-8 -*-
-"""
-Binance USDⓈ-M Futures Connector (testnet↔live toggle)
-
-외부 의존:
-- REST: httpx (권장) 또는 requests 폴백
-- WS  : websocket-client (권장). 미설치 시 폴백 REST-폴링(간이) 제공.
-
-모든 메서드는 표준 응답 계약을 따른다:
-- 성공: {"ok": True, "data": ...}
-- 실패: {"ok": False, "error": {"code": "<E_*>", "msg": str, "ctx": dict}}
-
-주의: 주문은 기본 스텁(E_ORDER_STUB). M3에서 활성/고도화한다.
-"""
 from __future__ import annotations
 
-import os
-import time
+import hashlib
 import hmac
 import json
-import uuid
-import hashlib
-import threading
 import logging
-import concurrent.futures
-from urllib.parse import urlencode
+import os
+import queue
+import threading
+import time
+import urllib.parse as up
 from dataclasses import dataclass
-from typing import Callable, Optional, Dict, Any, List
-from functools import lru_cache
+from typing import Any, Callable, Dict, List, Optional
 
-from .http_driver import HttpDriver
+import requests
 
-try:
-    from ftm2.core.env import (
-        load_env_chain,
-        load_binance_credentials,
-    )
-except Exception:  # pragma: no cover
-    from core.env import load_env_chain  # type: ignore
-    from core.env import load_binance_credentials  # type: ignore
+log = logging.getLogger("ftm2.binance")
 
-LIVE_MARK_WS = "wss://fstream.binance.com/ws"  # 시장 데이터는 항상 라이브
-
-_http_drv = HttpDriver()
+BINANCE_FUTURES_LIVE = "https://fapi.binance.com"
+BINANCE_FUTURES_TEST = "https://testnet.binancefuture.com"
+WS_COMBINED_LIVE = "wss://fstream.binance.com/stream?streams="
+WS_COMBINED_TEST = "wss://stream.binancefuture.com/stream?streams="
 
 
-def boot_http() -> None:
-    """Ensure HTTP driver is started."""
-    if _http_drv._mode is None:
-        _http_drv.start()
-
-
-def get_klines(symbol: str, interval: str, limit: int = 600):
-    """Simple REST helper for warmup. Returns raw kline rows."""
-    boot_http()
-    url = "https://fapi.binance.com/fapi/v1/klines"
-    return _http_drv.get(url, params={"symbol": symbol, "interval": interval, "limit": limit})
-
-
-
-# WS driver
-try:
-    from websocket import WebSocketApp  # websocket-client
-    _WS_HAVE = "websocket-client"
-except Exception:  # pragma: no cover
-    WebSocketApp = None
-    _WS_HAVE = ""
-
-
-log = logging.getLogger("binance.client")
-if not log.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-_BINANCE_ERROR_HINTS = {
-    -2015: "API 키 또는 권한 오류",
-    -2019: "잔고 부족",
-    -2022: "reduceOnly 위반 또는 포지션 없음",
-    -1111: "값 범위 또는 소수 자릿수 오류",
-    -1022: "시그니처 검증 실패",
-}
-
-
-# [ANCHOR:WS_MANAGER] begin
-"""
-웹소켓 종료를 병렬로 처리하여 전체 셧다운 시간을 줄인다.
-- ws_open() 시 register()로 등록
-- stop_all_parallel()로 일괄 종료(타임아웃/로그 포함)
-ENV:
-  WS_STOP_PARALLEL=1        # 1=병렬, 0=직렬
-  WS_STOP_TIMEOUT_S=3       # 각 WS join 타임아웃
-  WS_STOP_MAX_WORKERS=8     # 병렬 종료 스레드 수 한도
-"""
-class _WSHandle:
-    __slots__ = ("url", "closer", "thread")
-
-    def __init__(self, url: str, closer, thread: threading.Thread | None):
-        self.url = url
-        self.closer = closer             # callable: () -> None
-        self.thread = thread             # ws run_forever thread
-
-_WS_REG: dict[str, _WSHandle] = {}
-_WS_LOCK = threading.Lock()
-
-
-def ws_register(url: str, closer, thread: threading.Thread | None):
-    """WS 생성 직후 호출해서 레지스트리에 추가."""
-    h = _WSHandle(url, closer, thread)
-    with _WS_LOCK:
-        _WS_REG[url] = h
-    log.info("[WS OPEN] %s", url)
-
-
-def ws_unregister(url: str):
-    with _WS_LOCK:
-        _WS_REG.pop(url, None)
-
-
-def _close_one(h: _WSHandle, timeout_s: float):
-    try:
-        # idempotent closer (여러 번 불러도 안전)
-        h.closer()
-    except Exception:
-        log.exception("E_WS_CLOSE url=%s", h.url)
-    if h.thread:
-        h.thread.join(timeout=timeout_s)
-        if h.thread.is_alive():
-            log.warning("E_WS_STOP_TIMEOUT url=%s timeout=%.1fs", h.url, timeout_s)
-        else:
-            log.info("[WS STOP] %s", h.url)
-    else:
-        log.info("[WS STOP] %s (no-thread)", h.url)
-
-
-def ws_stop_all_parallel():
-    """등록된 모든 WS를 (옵션) 병렬로 종료한다."""
-    with _WS_LOCK:
-        handles = list(_WS_REG.values())
-        _WS_REG.clear()
-
-    if not handles:
-        log.info("[WS STOPPED] none")
-        return
-
-    timeout_s = float(os.getenv("WS_STOP_TIMEOUT_S", "3").strip() or "3")
-    parallel = os.getenv("WS_STOP_PARALLEL", "1").strip() in ("1", "true", "True", "YES", "yes")
-    max_workers = int(os.getenv("WS_STOP_MAX_WORKERS", "8").strip() or "8")
-    max_workers = max(1, min(max_workers, len(handles)))
-
-    t0 = time.time()
-    if parallel and len(handles) > 1:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(_close_one, h, timeout_s) for h in handles]
-            concurrent.futures.wait(futs, timeout=timeout_s + 2)
-    else:
-        for h in handles:
-            _close_one(h, timeout_s)
-
-    log.info("[WS STOPPED] all streams closed in %.2fs (n=%d, parallel=%s)",
-             time.time() - t0, len(handles), parallel)
-# [ANCHOR:WS_MANAGER] end
-
-
-def _ok(data: Any) -> Dict[str, Any]:
-    return {"ok": True, "data": data}
-
-
-def _err(code: str, msg: str, **ctx) -> Dict[str, Any]:
-    return {"ok": False, "error": {"code": code, "msg": msg, "ctx": ctx}}
-
-
-def _as_bool(val, default: bool = False) -> bool:
-    if val is None:
-        return default
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val)
-    if isinstance(val, str):
-        v = val.strip().lower()
-        if not v:
-            return default
-        return v in {"1", "true", "t", "y", "yes", "on"}
-    return bool(val)
+def _env(key: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(key)
+    return v if v not in (None, "") else default
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-# -----------------------------------------------------------------------------
-# [ANCHOR:BINANCE_CLIENT] begin
-# -----------------------------------------------------------------------------
+@dataclass
+class _Resp:
+    ok: bool
+    data: Any
+    code: Optional[int] = None
+    msg: str = ""
+
+
 class BinanceClient:
+    """Simple USDⓈ-M Futures REST/WS connector.
+
+    Attributes
+    ----------
+    mode: str
+        Either "testnet" or "live". If not supplied the mode is derived from
+        ``TRADE_MODE`` → ``MODE`` → ``DATA_MODE`` environment variables with a
+        fallback to ``testnet``.
+    base: str
+        REST base URL resolved from the mode.
+    ws_base: str
+        Combined stream websocket base URL.
+    key / secret: str
+        API credentials resolved from explicit arguments or environment
+        variables. The resolver honours the following order per value:
+        explicit argument → ``BINANCE__API_KEY``/``BINANCE__API_SECRET`` →
+        environment scoped pairs (``BINANCE_TESTNET_API_KEY`` etc.) → generic
+        ``BINANCE_API_KEY`` pair.
+    recv: int
+        Binance ``recvWindow`` in milliseconds.
+    timeout: int
+        REST/WS timeout seconds.
     """
-    USDⓈ-M Futures 전용 클라이언트. testnet↔live 토글 가능.
-
-    생성은 보통 from_env()를 권장:
-        cli = BinanceClient.from_env()
-
-    주요 REST:
-      - ping(), server_time(), exchange_info(), mark_price()
-      - get_account(), get_positions()
-      - create_order()  # 기본 스텁(E_ORDER_STUB)
-
-    WS 구독:
-      - subscribe_kline(symbol, interval, on_msg)
-      - subscribe_mark_price(symbol, on_msg)
-      - subscribe_user(listenKey, on_msg)
-
-    각 subscribe_* 는 WSHandle을 반환하며, .stop() 으로 종료.
-    """
-
-    # 기본 엔드포인트 맵
-    DEFAULTS = {
-        "live": {
-            "rest": "https://fapi.binance.com",
-            "ws":   "wss://fstream.binance.com",
-        },
-        "testnet": {
-            "rest": "https://testnet.binancefuture.com",
-            "ws":   "wss://stream.binancefuture.com",
-        },
-    }
-
-    # --- helpers: unified key loader & env auto-detect ------------------
-    @staticmethod
-    def _load_keypair_unified(prefer: str | None = None) -> tuple[str, str]:
-        """
-        우선순위:
-          1) 공통: BINANCE_API_KEY / BINANCE_API_SECRET
-             (또는 BINANCE_KEY / BINANCE_SECRET, TOKEN / TOKEN_SECRET 호환)
-          2) 선호(prefer)가 지정되면 해당 환경 키를 가산:
-             prefer == "live"    -> BINANCE_LIVE_API_KEY / _SECRET
-             prefer == "testnet" -> BINANCE_TESTNET_API_KEY / _SECRET
-          3) 마지막 백업으로 서로 다른 환경 변수 중 먼저 발견되는 값 사용
-        """
-        import os
-        key = (
-            os.getenv("BINANCE_API_KEY")
-            or os.getenv("BINANCE_KEY")
-            or os.getenv("TOKEN")
-            or ""
-        )
-        secret = (
-            os.getenv("BINANCE_API_SECRET")
-            or os.getenv("BINANCE_SECRET")
-            or os.getenv("TOKEN_SECRET")
-            or ""
-        )
-        # prefer 가 지정되면 그쪽 ENV로 보강
-        if prefer == "live":
-            key = os.getenv("BINANCE_LIVE_API_KEY") or key
-            secret = os.getenv("BINANCE_LIVE_API_SECRET") or secret
-        elif prefer == "testnet":
-            key = os.getenv("BINANCE_TESTNET_API_KEY") or key
-            secret = os.getenv("BINANCE_TESTNET_API_SECRET") or secret
-        else:
-            # 아무것도 없을 때 두 환경 것을 순서대로 시도
-            key = (
-                os.getenv("BINANCE_API_KEY")
-                or os.getenv("BINANCE_LIVE_API_KEY")
-                or os.getenv("BINANCE_TESTNET_API_KEY")
-                or key
-            )
-            secret = (
-                os.getenv("BINANCE_API_SECRET")
-                or os.getenv("BINANCE_LIVE_API_SECRET")
-                or os.getenv("BINANCE_TESTNET_API_SECRET")
-                or secret
-            )
-        return key or "", secret or ""
-
-    @staticmethod
-    def _detect_trade_env(api_key: str, timeout: float = 2.5) -> str:
-        """
-        주어진 API KEY가 어느 환경의 키인지 자동 판별.
-        - futures listenKey 생성(서명 불필요)을 testnet→live 순으로 시도
-        - 200이면 해당 환경
-        - 둘 다 실패하면 안전하게 'testnet'
-        """
-        if not api_key:
-            return "testnet"
-        headers = {"X-MBX-APIKEY": api_key}
-        post = None
-        try:
-            import httpx  # type: ignore
-            post = lambda url: httpx.post(url, headers=headers, timeout=timeout)
-        except Exception:
-            try:
-                import requests  # type: ignore
-                post = lambda url: requests.post(url, headers=headers, timeout=timeout)
-            except Exception:
-                return "testnet"
-        try:
-            r = post("https://testnet.binancefuture.com/fapi/v1/listenKey")
-            if getattr(r, "status_code", 0) == 200:
-                return "testnet"
-        except Exception:
-            pass
-        try:
-            r = post("https://fapi.binance.com/fapi/v1/listenKey")
-            if getattr(r, "status_code", 0) == 200:
-                return "live"
-        except Exception:
-            pass
-        return "testnet"
 
     def __init__(
         self,
-        mode: str = "testnet",
-        key: Optional[str] = None,
-        secret: Optional[str] = None,
-        *,
-        rest_base: Optional[str] = None,
-        ws_base: Optional[str] = None,
-        recv_window_ms: int = 30000,
-        order_active: bool = False,  # 기본 False → 스텁 반환
-        http_timeout: float = 10.0,
-        trade_mode: Optional[str] = None,
-        exec_active: Optional[bool | str] = None,
-        arm_live: Optional[str] = None,
-        hedge_mode: Optional[bool | str] = None,
+        mode: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        recv_window_ms: int = 5000,
+        timeout_s: int = 10,
     ) -> None:
-        tm_raw = trade_mode or os.getenv("TRADE_MODE") or mode or "testnet"
-        tm = (tm_raw or "testnet").strip().lower()
-        if tm not in ("dry", "testnet", "live"):
-            tm = "testnet"
-        self.trade_mode = tm
+        env_mode = _env("TRADE_MODE") or _env("MODE") or _env("DATA_MODE")
+        raw_mode = (mode or env_mode or "testnet").lower()
+        if raw_mode == "dry":
+            raw_mode = "testnet"
+        self.mode = "live" if raw_mode == "live" else "testnet"
 
-        actual_mode = "testnet" if tm == "dry" else tm
-        if actual_mode not in ("testnet", "live"):
-            actual_mode = "testnet"
-        self.mode = actual_mode
+        self.base = BINANCE_FUTURES_TEST if self.mode == "testnet" else BINANCE_FUTURES_LIVE
+        self.ws_base = WS_COMBINED_TEST if self.mode == "testnet" else WS_COMBINED_LIVE
 
-        defaults = self.DEFAULTS[self.mode]
-        self.rest_base = (rest_base or os.getenv("REST_BASE_OVERRIDE") or defaults["rest"]).rstrip("/")
-        self.ws_base = (ws_base or os.getenv("WS_BASE_OVERRIDE") or defaults["ws"]).rstrip("/")
+        self.key, self.secret = self._resolve_credentials(api_key, api_secret)
+        self.recv = int(recv_window_ms)
+        self.timeout = int(timeout_s)
 
-        prefer_env = "live" if self.trade_mode == "live" else "testnet"
-        resolved_key = key or ""
-        resolved_secret = secret or ""
-        if not resolved_key or not resolved_secret:
-            env_key, env_secret = self._load_keypair_unified(prefer_env)
-            if not resolved_key:
-                resolved_key = env_key
-            if not resolved_secret:
-                resolved_secret = env_secret
-        self.key = resolved_key or ""
-        self.secret = resolved_secret or ""
-
-        recv_env = os.getenv("RECV_WINDOW_MS") or os.getenv("BINANCE_RECV_WINDOW")
-        try:
-            self.recv_window_ms = int(recv_env) if recv_env else int(recv_window_ms)
-        except Exception:
-            self.recv_window_ms = int(recv_window_ms)
-
-        self._clock_offset_ms = 0
-        self._order_toggle = bool(order_active)
-        exec_env_val = exec_active if exec_active is not None else os.getenv("EXEC_ACTIVE")
-        self._exec_active = _as_bool(exec_env_val, default=bool(order_active))
-        self.arm_live = (arm_live if arm_live is not None else os.getenv("ARM_LIVE", "")).strip()
-        self.hedge_mode = _as_bool(hedge_mode if hedge_mode is not None else os.getenv("HEDGE_MODE"), default=False)
-        self.http_timeout = http_timeout
-
-        self._filters_cache = {}
-        self._filters_ttl_s = 300
-        self._filters_last = 0
-
-        self.http: str | None = None
-        self._bind_http_driver()
-
-        log.info(
-            "[BINANCE_CLIENT_STATUS] mode=%s trade_mode=%s rest=%s ws=%s http=%s ws_driver=%s",
-            self.mode,
-            self.trade_mode,
-            self.rest_base,
-            self.ws_base,
-            self.http or "none",
-            _WS_HAVE or "none",
-        )
-
-    def _arm_live_armed(self) -> bool:
-        if self.trade_mode != "live":
-            return True
-        marker = (self.arm_live or "").strip()
-        if not marker:
-            return False
-        return marker.upper() in {"I-ACK", "ACK", "YES", "Y", "OK", "ARMED"}
-
-    @property
-    def exec_active(self) -> bool:
-        return bool(self._exec_active)
-
-    def set_exec_active(self, active: Optional[bool | str]) -> None:
-        self._exec_active = _as_bool(active, default=self._exec_active)
-
-    @property
-    def order_active(self) -> bool:
-        if self.trade_mode == "dry":
-            return False
-        if not self._order_toggle:
-            return False
-        if not self.exec_active:
-            return False
-        return self._arm_live_armed()
-
-    @order_active.setter
-    def order_active(self, value: bool) -> None:
-        self._order_toggle = bool(value)
-
-    def sync_time(self) -> None:
-        t0 = int(time.time() * 1000)
-        r = self._http_request("GET", "/v1/time")
-        t1 = int(time.time() * 1000)
-        if not r.get("ok"):
-            raise RuntimeError("TIME_SYNC_FAIL")
-        server_ms = (r.get("data") or {}).get("serverTime")
-        if isinstance(server_ms, (int, float)):
-            self._clock_offset_ms = int(server_ms - (t0 + t1) // 2)
-
-    def _now_ms(self) -> int:
-        return int(time.time() * 1000 + self._clock_offset_ms)
-
-    def warmup_filters(self, symbols):
-        now = time.time()
-        if now - self._filters_last < self._filters_ttl_s and self._filters_cache:
-            return
-        r = self._http_request("GET", "/fapi/v1/exchangeInfo")
-        if not r.get("ok"):
-            return
-        data = r.get("data") or {}
-        mp = {}
-        for s in data.get("symbols", []):
-            sym = s.get("symbol")
-            if sym not in symbols:
-                continue
-            lot = mlot = notional = None
-            for f in s.get("filters", []):
-                t = f.get("filterType")
-                if t == "LOT_SIZE":
-                    lot = {
-                        "minQty": float(f["minQty"]),
-                        "maxQty": float(f["maxQty"]),
-                        "stepSize": float(f["stepSize"]),
-                    }
-                elif t == "MARKET_LOT_SIZE":
-                    mlot = {
-                        "minQty": float(f["minQty"]),
-                        "maxQty": float(f["maxQty"]),
-                        "stepSize": float(f["stepSize"]),
-                    }
-                elif t == "NOTIONAL":
-                    notional = {
-                        "minNotional": float(f.get("notional") or 0.0),
-                        "applyMinToMarket": bool(f.get("applyMinToMarket", True)),
-                    }
-            mp[sym] = {"lot_size": lot, "market_lot_size": mlot, "notional": notional}
-        self._filters_cache = mp
-        self._filters_last = now
-        log.info(f"[FILTERS] warmed {list(mp.keys())}")
-
-    @lru_cache(maxsize=128)
-    def get_symbol_filters(self, symbol: str) -> dict:
-        return self._filters_cache.get(symbol, {})
+        self._ws_th: Optional[threading.Thread] = None
+        self._ws_stop = threading.Event()
+        self._ws = None
+        self._poll_ctl: Optional[queue.Queue] = None
 
     # ------------------------------------------------------------------
-    # Factories
+    # REST helpers
     # ------------------------------------------------------------------
-    @classmethod
-    def from_env(
-        cls,
-        *,
-        for_trade: bool = True,
-        api_key: str | None = None,
-        api_secret: str | None = None,
-    ) -> "BinanceClient":
-        load_env_chain()
-        mode = (os.getenv("MODE") or "testnet").lower()
-        if mode not in ("testnet", "live"):
-            mode = "testnet"
-        key = (
-            api_key
-            or os.getenv("BINANCE_API_KEY")
-            or os.getenv(f"BINANCE_{mode.upper()}_API_KEY")
-        )
-        secret = (
-            api_secret
-            or os.getenv("BINANCE_API_SECRET")
-            or os.getenv(f"BINANCE_{mode.upper()}_API_SECRET")
-        )
-        if for_trade and (not key or not secret):
-            raise RuntimeError("BINANCE API key/secret not found in env")
-        cli = cls(mode, key or "", secret or "", order_active=for_trade)
-        if for_trade:
-            try:
-                cli.sync_time()
-            except Exception as e:  # pragma: no cover
-                log.warning("TIME_SYNC_FAIL: %s", e)
-        return cli
+    def _resolve_credentials(self, api_key: Optional[str], api_secret: Optional[str]) -> tuple[str, str]:
+        if api_key and api_secret:
+            return api_key, api_secret
 
-    # [ANCHOR:DUAL_MODE]
-    @classmethod
-    def for_data(cls, mode: str = "live") -> "BinanceClient":
-        """
-        공개 시세/클라인 전용 클라이언트. API 키 불필요.
-        mode: live | testnet | replay(=testnet)
-        """
-        return cls(
-            mode=("testnet" if mode == "testnet" else "live"),
-            order_active=False,
-        )
+        scoped_prefix = "LIVE" if self.mode == "live" else "TESTNET"
+        scope_key = _env(f"BINANCE_{scoped_prefix}_API_KEY")
+        scope_secret = _env(f"BINANCE_{scoped_prefix}_API_SECRET")
 
-    @classmethod
-    def for_trade(cls, mode: str, order_active: bool = True) -> "BinanceClient":
-        """
-        mode: 'auto' | 'live' | 'testnet' | 'dry'
-        - 'auto' : load_binance_credentials() 로 자동 환경 감지
-        - 그 외  : 해당 환경으로 강제 지정
-        """
-        m = (mode or "auto").lower()
-        if m == "dry":
-            cli = cls("testnet", "", "", order_active=False)
-        else:
-            creds = load_binance_credentials()
-            if m == "auto":
-                env = creds.env
-            elif m == "live":
-                env = "live"
-            elif m == "testnet":
-                env = "testnet"
-            else:
-                env = "testnet"
-            cli = cls(env, creds.api_key, creds.api_secret, order_active=order_active)
-        try:
-            cli.sync_time()
-        except Exception as e:  # pragma: no cover
-            log.warning("TIME_SYNC_FAIL: %s", e)
-        return cli
+        generic_key = _env("BINANCE_API_KEY")
+        generic_secret = _env("BINANCE_API_SECRET")
+        double_key = _env("BINANCE__API_KEY")
+        double_secret = _env("BINANCE__API_SECRET")
 
-    # ------------------------------------------------------------------
-    # HTTP driver binding
-    # ------------------------------------------------------------------
-    def _bind_http_driver(self) -> None:
-        if self.http:
-            return
-        try:
-            import httpx  # noqa: F401
-            self.http = "httpx"
-        except Exception:  # pragma: no cover
-            try:
-                import requests  # noqa: F401
-                self.http = "requests"
-            except Exception:
-                self.http = None
-        logging.getLogger("binance.client").info(
-            "[HTTP DRIVER] selected=%s", self.http or "none"
-        )
+        key = api_key or double_key or scope_key or generic_key or ""
+        secret = api_secret or double_secret or scope_secret or generic_secret or ""
+        return key, secret
 
-    def ensure_http(self) -> None:
-        if not self.http:
-            self._bind_http_driver()
-        if not self.http:
-            raise RuntimeError("HTTP driver not available")
-
-    # ------------------------------------------------------------------
-    # HTTP helpers
-    # ------------------------------------------------------------------
-    def _encode_and_sign(self, params: Dict[str, Any]) -> str:
-        """URL-encode params and append HMAC-SHA256 signature."""
+    def _sign(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.secret:
+            raise RuntimeError("API secret required for signed request")
         params = dict(params)
-        params.setdefault("recvWindow", self.recv_window_ms)
-        if "timestamp" not in params:
-            params["timestamp"] = self._now_ms()
-        encoded = urlencode(params, doseq=True)
-        sig = hmac.new(self.secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
-        return f"{encoded}&signature={sig}"
+        query = up.urlencode(params, doseq=True)
+        sig = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        params["signature"] = sig
+        return params
 
-    def _http_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
-                      signed: bool = False, headers: Optional[Dict[str, str]] = None,
-                      _retried: bool = False) -> Dict[str, Any]:
-        if self.http not in ("httpx", "requests"):
-            return _err("E_CONN_FAIL", "HTTP driver not available (install httpx or requests)")
-
-        base = self.rest_base.rstrip("/")
-        url = f"{base}{path}"
+    def _r(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        auth: bool = False,
+    ) -> _Resp:
+        url = f"{self.base}{path}"
+        headers: Dict[str, str] = {}
         params = dict(params or {})
-        orig_params = dict(params)
-
-        # futures REST는 /fapi/* 하위
-        if not path.startswith("/fapi/"):
-            url = f"{base}/fapi{path}"
-
-        # 서명
-        hdrs = dict(headers or {})
-        orig_hdrs = dict(hdrs)
-        payload: Optional[str] = None
-        if signed:
-            if not self.key or not self.secret:
-                return _err("E_AUTH", "API key/secret required", path=path)
-            hdrs["X-MBX-APIKEY"] = self.key
-            payload = self._encode_and_sign(params)
-        else:
-            # 일부 엔드포인트(유저스트림)는 KEY 헤더만 요구
-            if "listenKey" in path or path.endswith("/listenKey"):
-                if not self.key:
-                    return _err("E_AUTH", "API key required for user stream", path=path)
-                hdrs["X-MBX-APIKEY"] = self.key
-
+        if auth:
+            params.update({"timestamp": _now_ms(), "recvWindow": self.recv})
+            params = self._sign(params)
+            headers["X-MBX-APIKEY"] = self.key
         try:
-            if self.http == "httpx":
-                import httpx
-                with httpx.Client(timeout=self.http_timeout) as client:
-                    if signed:
-                        if method in ("GET", "DELETE"):
-                            r = client.request(method, f"{url}?{payload}", headers=hdrs)
-                        else:  # POST, PUT
-                            hdrs["Content-Type"] = "application/x-www-form-urlencoded"
-                            r = client.request(method, url, content=payload, headers=hdrs)
-                    else:
-                        r = client.request(method, url, params=params, headers=hdrs)
-                    status = r.status_code
-                    text = r.text
+            if method == "GET":
+                r = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+            elif method == "POST":
+                r = requests.post(url, params=params, headers=headers, timeout=self.timeout)
+            elif method == "DELETE":
+                r = requests.delete(url, params=params, headers=headers, timeout=self.timeout)
             else:
-                import requests
-                if signed:
-                    if method in ("GET", "DELETE"):
-                        r = requests.request(method, f"{url}?{payload}", headers=hdrs, timeout=self.http_timeout)
-                    else:
-                        hdrs["Content-Type"] = "application/x-www-form-urlencoded"
-                        r = requests.request(method, url, data=payload, headers=hdrs, timeout=self.http_timeout)
-                else:
-                    r = requests.request(method, url, params=params, headers=hdrs, timeout=self.http_timeout)
-                status = r.status_code
-                text = r.text
-
-        except Exception as e:  # pragma: no cover
-            return _err("E_CONN_FAIL", f"{e}", url=url, path=path)
-
-        if status >= 400:
-            err: Dict[str, Any] = {}
-            try:
-                err = json.loads(text) if text else {}
-            except Exception:
-                err = {"msg": text}
-            code = err.get("code")
-            msg = err.get("msg")
-            ts_err = (code == -1021) or ("Timestamp" in str(msg))
-            if signed and ts_err and not _retried:
+                raise ValueError(method)
+            if r.status_code == 429:
+                log.warning("BX.REST.RATE_LIMIT %s", r.text)
+            r.raise_for_status()
+            data = r.json() if r.text else None
+            return _Resp(True, data)
+        except requests.RequestException as exc:
+            txt = getattr(exc.response, "text", str(exc))
+            log.error("BX.REST.FAIL %s %s %s", method, path, txt)
+            code = None
+            msg = str(txt)
+            if getattr(exc, "response", None) is not None:
                 try:
-                    self.sync_time()
-                except Exception as e:  # pragma: no cover
-                    log.warning("TIME_SYNC_FAIL: %s", e)
-                return self._http_request(
-                    method,
-                    path,
-                    params=orig_params,
-                    signed=signed,
-                    headers=orig_hdrs,
-                    _retried=True,
-                )
-            log.warning(
-                "[BINANCE_HTTP_ERR] %s %s code=%s msg=%s", method, path, code, msg
-            )
-            return _err(
-                "E_HTTP_STATUS",
-                f"HTTP {status}",
-                url=url,
-                path=path,
-                body=text,
-                binance_code=code,
-                binance_msg=msg,
-            )
-
-        try:
-            data = json.loads(text) if text else {}
-        except Exception as e:
-            return _err("E_DECODE", f"json decode fail: {e}", body=text[:200])
-
-        return _ok(data)
-
-    # ------------------------------------------------------------------
-    # REST: public
-    # ------------------------------------------------------------------
-    def ping(self) -> Dict[str, Any]:
-        r = self._http_request("GET", "/v1/ping")
-        if not r["ok"]:
-            return r
-        # /ping 은 빈 바디 → latency 측정용으로 time API 한 번 더
-        t0 = time.perf_counter()
-        _ = self.server_time()
-        latency_ms = int((time.perf_counter() - t0) * 1000)
-        return _ok({"latency_ms": latency_ms})
-
-
-    def server_time(self) -> Dict[str, Any]:
-        return self._http_request("GET", "/v1/time")
-
-    def exchange_info(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
-        params: Dict[str, Any] = {}
-        if symbols:
-            # ["BTCUSDT","ETHUSDT"] → '["BTCUSDT","ETHUSDT"]'
-            params["symbols"] = json.dumps(symbols)
-        return self._http_request("GET", "/v1/exchangeInfo", params=params)
-
-    def mark_price(self, symbol: str) -> Dict[str, Any]:
-        r = self._http_request("GET", "/v1/premiumIndex", params={"symbol": symbol})
-        if not r["ok"]:
-            return r
-        d = r["data"]
-        # d = {..., "markPrice": "xxxxx.x", "time": 123}
-        try:
-            d["markPrice"] = float(d.get("markPrice"))
-        except Exception:
-            pass
-        return _ok(d)
-
-    def klines(self, symbol: str, interval: str, limit: int = 500) -> Dict[str, Any]:
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._http_request("GET", "/v1/klines", params=params)
-
-    # ------------------------------------------------------------------
-    # REST: signed
-    # ------------------------------------------------------------------
-    def get_account(self) -> Dict[str, Any]:
-        # futures 계정 정보
-        return self._http_request("GET", "/v2/account", signed=True)
-
-    def get_positions(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
-        params: Dict[str, Any] = {}
-        if symbols and len(symbols) == 1:
-            params["symbol"] = symbols[0]
-        # v2/positionRisk 는 심볼 미지정 시 전체 반환
-        return self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
-
-    def get_balance_usdt(self) -> Dict[str, float]:
-        if not self.key or not self.secret:
-            raise RuntimeError("NO_API_KEY")
-        r = self._http_request("GET", "/v2/balance", signed=True)
-        if not r.get("ok"):
-            err = r.get("error", {})
-            raise RuntimeError(err.get("code", "E_BAL"))
-        for b in r.get("data", []):
-            if b.get("asset") == "USDT":
-                wb = float(b.get("balance") or b.get("wb") or 0.0)
-                # Futures /v2/balance 응답에는 availableBalance가 존재
-                avail = float(
-                    b.get("availableBalance")
-                    or b.get("cw")
-                    or b.get("crossWalletBalance")
-                    or 0.0
-                )
-                return {"wallet": wb, "avail": avail}
-        raise RuntimeError("USDT_NOT_FOUND")
-
-    # [ANCHOR:BINANCE_CLIENT_BAL]
-    def get_equity(self) -> Optional[float]:
-        if not self.key or not self.secret:
-            return None
-        r = self._http_request("GET", "/v2/balance", signed=True)
-        if r.get("ok"):
-            data = r.get("data") or []
-            usdt = next((x for x in data if x.get("asset") == "USDT"), None)
-            if usdt:
-                try:
-                    return float(usdt.get("balance") or usdt.get("crossWalletBalance") or 0.0)
+                    payload = exc.response.json()
+                    code = payload.get("code")
+                    msg = payload.get("msg", msg)
                 except Exception:
                     pass
-        alt = self._http_request("GET", "/v2/account", signed=True)
-        if not alt.get("ok"):
-            return None
-        d = alt.get("data") or {}
-        try:
-            return float(d.get("totalMarginBalance") or d.get("totalWalletBalance") or 0.0)
-        except Exception:
-            return None
+            return _Resp(False, None, code=code, msg=msg)
 
+    # ------------------------------------------------------------------
+    # Public market/account
+    # ------------------------------------------------------------------
+    def get_exchange_info(self) -> dict:
+        resp = self._r("GET", "/fapi/v1/exchangeInfo")
+        if not resp.ok:
+            raise RuntimeError(f"exchange_info_failed:{resp.code}:{resp.msg}")
+        return resp.data or {}
 
-    # [ANCHOR:BINANCE_CLIENT] fetch_equity 정확화
-    def fetch_equity(self) -> dict:
-        """
-        Futures ACCOUNT를 기준으로 Equity/Available을 산출한다.
-        - endpoint: GET /fapi/v2/account  (testnet/live 베이스URL 자동)
-        반환: {"wallet", "available", "totalMarginBalance", "totalUnrealizedProfit", "ts"}
-        """
-        r = self._http_request("GET", "/v2/account", params={"recvWindow": 30000}, signed=True)
-        if not r.get("ok"):
-            raise RuntimeError("E_FETCH_EQUITY")
-        d = r.get("data") or {}
-        ts = int(time.time() * 1000)
-        t_wallet = float(d.get("totalWalletBalance") or 0.0)
-        t_margin = float(d.get("totalMarginBalance") or 0.0)
-        t_upnl = float(d.get("totalUnrealizedProfit") or 0.0)
-        avail = float(d.get("availableBalance") or 0.0)
-        snap = {
-            "wallet": t_wallet,
-            "available": avail,
-            "totalMarginBalance": t_margin,
-            "totalUnrealizedProfit": t_upnl,
-            "ts": ts,
-        }
-        return snap
-
-    # --- 계정 스냅샷 ---------------------------------------------------
-    def account_snapshot(self) -> Dict[str, Any]:
-        """/fapi/v2/account에서 잔고/포지션을 한 번에 가져온다."""
-
-        r = self._http_request("GET", "/v2/account", signed=True)
-        if not r.get("ok"):
-            return {}
-        d = r.get("data") or {}
-        try:
-            equity = float(d.get("totalMarginBalance") or 0.0)
-            wallet = float(d.get("totalWalletBalance") or 0.0)
-            upnl = float(d.get("totalUnrealizedProfit") or 0.0)
-            avail = float(d.get("availableBalance") or 0.0)
-        except Exception:
-            equity = wallet = upnl = avail = 0.0
-        positions = d.get("positions") or []
-        return {"equity": equity, "wallet": wallet, "upnl": upnl, "avail": avail, "positions": positions}
-
-    # --- 통합 잔고/에쿼티 조회 ---------------------------------------
-    def fetch_account_equity(self) -> Dict[str, float]:
-        snap = self.account_snapshot()
+    def get_mark_price(self, symbol: str) -> dict:
+        resp = self._r("GET", "/fapi/v1/premiumIndex", {"symbol": symbol})
+        if not resp.ok:
+            raise RuntimeError(f"mark_price_failed:{resp.code}:{resp.msg}")
+        data = resp.data or {}
         return {
-            "wallet": float(snap.get("wallet", 0.0)),
-            "equity": float(snap.get("equity", 0.0)),
-            "upnl": float(snap.get("upnl", 0.0)),
-            "avail": float(snap.get("avail", 0.0)),
+            "symbol": data.get("symbol", symbol.upper()),
+            "markPrice": float(data.get("markPrice", 0.0)),
+            "time": int(data.get("time", _now_ms())),
         }
 
-    # 간편 equity 조회
-    def equity(self) -> float:
-        try:
-            return float(self.account_snapshot().get("equity", 0.0))
-
-        except Exception:
-            return 0.0
-
-    # --- 신규: 포지션 조회 ---------------------------------------------
-    def fetch_positions(self, symbols: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
-        """/fapi/v2/account 의 positions 필드를 사용해 현재 포지션을 조회한다."""
-        r = self._http_request("GET", "/v2/account", signed=True)
-        if not r.get("ok"):
-            return {}
-        data = r.get("data") or {}
-        out: Dict[str, Dict[str, Any]] = {}
-        pos_list = data.get("positions") or []
-        for p in pos_list:
-            sym = (p.get("symbol") or "").upper()
-            if not sym:
-                continue
-            if symbols and sym not in symbols:
-                continue
+    def get_klines(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 500,
+        end_ms: Optional[int] = None,
+    ) -> List[dict]:
+        limit = max(1, min(limit, 1500))
+        params: Dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        if end_ms:
+            params["endTime"] = end_ms
+        resp = self._r("GET", "/fapi/v1/klines", params)
+        if not resp.ok:
+            raise RuntimeError(f"klines_failed:{resp.code}:{resp.msg}")
+        rows = resp.data or []
+        out: List[dict] = []
+        for row in rows:
             try:
-                qty = float(p.get("positionAmt") or 0.0)
+                out.append(
+                    {
+                        "ts": int(row[0]),
+                        "o": float(row[1]),
+                        "h": float(row[2]),
+                        "l": float(row[3]),
+                        "c": float(row[4]),
+                        "v": float(row[5]),
+                        "tf": interval,
+                        "symbol": symbol,
+                    }
+                )
             except Exception:
-                qty = 0.0
-            if abs(qty) == 0:
                 continue
-            try:
-                ep = float(p.get("entryPrice") or 0.0)
-                up = float(p.get("unrealizedProfit")) if "unrealizedProfit" in p else float(p.get("unRealizedProfit", 0.0))
-                lev = float(p.get("leverage") or 0.0)
-            except Exception:
-                ep = up = lev = 0.0
-            out[sym] = {
-                "symbol": sym,
-                "pa": qty,
-                "ep": ep,
-                "up": up,
-                "leverage": lev,
-                "marginType": p.get("marginType"),
-            }
         return out
 
-
-    # --- 포지션 리스크 조회 -------------------------------------------
-    def positions_risk(self, symbols: List[str] | None = None) -> List[Dict[str, Any]]:
+    def get_position_risk(self, symbol: Optional[str] = None) -> List[dict]:
         params: Dict[str, Any] = {}
-        if symbols:
-            params["symbols"] = json.dumps(symbols)
-        r = self._http_request("GET", "/v2/positionRisk", params=params, signed=True)
-        if not r.get("ok"):
-            return []
-        return r.get("data") or []
-
-
-    def create_order(self, payload: Dict[str, Any], *, validate_only: bool = False) -> Dict[str, Any]:
-        """
-        Futures 주문 생성. 활성 조건(order_active) 미충족 시 스텁(E_ORDER_STUB) 반환.
-
-        payload 필수 필드: symbol, side, type, quantity
-        선택 필드: price, reduceOnly, positionSide, timeInForce, newClientOrderId
-        """
-        if not isinstance(payload, dict):
-            return _err("E_SCHEMA", "payload must be dict")
-
-        required = ("symbol", "side", "type", "quantity")
-        for field in required:
-            if field not in payload or payload[field] in (None, ""):
-                return _err("E_SCHEMA", f"missing field: {field}")
-
-        if not self.order_active and not validate_only:
-            if self.trade_mode == "dry":
-                reason = "dry"
-            elif not self._order_toggle:
-                reason = "manual_off"
-            elif not self.exec_active:
-                reason = "exec_off"
-            elif not self._arm_live_armed():
-                reason = "arm_live"
-            else:
-                reason = "inactive"
-            log.info("[ORDER_STUB] trade_mode=%s reason=%s payload=%s", self.trade_mode, reason, {"symbol": payload.get("symbol"), "side": payload.get("side")})
-            return _err("E_ORDER_STUB", f"order path disabled ({reason})", payload=payload)
-
-        data = dict(payload)
-        data.setdefault(
-            "newClientOrderId",
-            f"ftm2-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}",
-        )
-
-        otype = (data.get("type") or "").upper()
-        if otype == "MARKET":
-            data.pop("timeInForce", None)
-            data.pop("price", None)
-        if "reduceOnly" in data:
-            data["reduceOnly"] = "true" if data["reduceOnly"] else "false"
-
-        path = "/v1/order/test" if validate_only else "/v1/order"
-        r = self._http_request("POST", path, params=data, signed=True)
-        if not r.get("ok"):
-            err = r.get("error") or {}
-            ctx = err.get("ctx") or {}
-            code = ctx.get("binance_code") or ctx.get("code")
-            msg = ctx.get("binance_msg") or ctx.get("msg")
-            reason = None
+        if symbol:
+            params["symbol"] = symbol
+        resp = self._r("GET", "/fapi/v2/positionRisk", params, auth=True)
+        if not resp.ok:
+            raise RuntimeError(f"position_risk_failed:{resp.code}:{resp.msg}")
+        rows = resp.data or []
+        out: List[dict] = []
+        for row in rows:
             try:
-                reason = _BINANCE_ERROR_HINTS.get(int(code))
+                qty = float(row.get("positionAmt", 0.0))
             except Exception:
-                reason = None
-            if reason:
-                log.warning("[ORDER_FAIL] code=%s msg=%s (%s)", code, msg, reason)
-            else:
-                log.warning("[ORDER_FAIL] code=%s msg=%s", code, msg)
-        return r
-# [ANCHOR:BINANCE_CLIENT] end
+                qty = 0.0
+            if abs(qty) < 1e-12:
+                continue
+            out.append(
+                {
+                    "symbol": (row.get("symbol") or symbol or "").upper(),
+                    "qty": qty,
+                    "entryPrice": float(row.get("entryPrice", 0.0)),
+                    "unPnl": float(row.get("unRealizedProfit", row.get("unrealizedProfit", 0.0))),
+                }
+            )
+        return out
+
+    def get_balance(self) -> List[dict]:
+        resp = self._r("GET", "/fapi/v2/balance", {}, auth=True)
+        if not resp.ok:
+            raise RuntimeError(f"balance_failed:{resp.code}:{resp.msg}")
+        rows = resp.data or []
+        out: List[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "asset": row.get("asset"),
+                    "wb": float(row.get("balance", row.get("wb", 0.0))),
+                    "cw": float(row.get("crossWalletBalance", row.get("cw", row.get("balance", 0.0)))),
+                }
+            )
+        return out
 
     # ------------------------------------------------------------------
-    # User Data Stream (listenKey)
+    # Orders
     # ------------------------------------------------------------------
-    def get_listen_key(self) -> Dict[str, Any]:
-        r = self._http_request("POST", "/v1/listenKey")
-        if not r.get("ok"):
-            return r
-        data = r.get("data") or {}
-        key = data.get("listenKey")
-        if isinstance(key, str) and key:
-            return _ok({"listenKey": key})
-        return _err("E_BINANCE", "listenKey missing", ctx=data)
+    def create_order(
+        self,
+        symbol: str,
+        side: str,
+        type: str,
+        qty: float,
+        price: Optional[float] = None,
+        reduce_only: bool = False,
+        client_id: Optional[str] = None,
+    ) -> dict:
+        payload: Dict[str, Any] = {
+            "symbol": symbol,
+            "side": side.upper(),
+            "type": type.upper(),
+            "quantity": f"{qty:.20f}",
+        }
+        if client_id:
+            payload["newClientOrderId"] = client_id
+        if reduce_only:
+            payload["reduceOnly"] = "true"
+        if payload["type"] == "LIMIT":
+            if price is None:
+                raise ValueError("price required for LIMIT orders")
+            payload.update({"price": f"{price:.8f}", "timeInForce": "GTC"})
+        resp = self._r("POST", "/fapi/v1/order", payload, auth=True)
+        if not resp.ok:
+            raise RuntimeError(f"order_reject:{resp.code}:{resp.msg}")
+        log.info("BX.ORD.SENT %s %s qty=%s", symbol, side.upper(), payload["quantity"])
+        return resp.data or {}
 
-    def keepalive_listen_key(self, listen_key: str) -> Dict[str, Any]:
-        r = self._http_request("PUT", "/v1/listenKey", params={"listenKey": listen_key})
-        if r.get("ok"):
-            return {"ok": True}
-        return r
-
-    def close_listen_key(self, listen_key: str) -> Dict[str, Any]:
-        return self._http_request("DELETE", "/v1/listenKey", params={"listenKey": listen_key})
-
-    def start_user_stream(self) -> Dict[str, Any]:
-        return self.get_listen_key()
-
-    def keepalive_user_stream(self, listen_key: str) -> Dict[str, Any]:
-        return self.keepalive_listen_key(listen_key)
-
-    def close_user_stream(self, listen_key: str) -> Dict[str, Any]:
-        return self.close_listen_key(listen_key)
+    def cancel_order(
+        self,
+        symbol: str,
+        order_id: Optional[int] = None,
+        client_id: Optional[str] = None,
+    ) -> dict:
+        payload: Dict[str, Any] = {"symbol": symbol}
+        if order_id is not None:
+            payload["orderId"] = order_id
+        if client_id is not None:
+            payload["origClientOrderId"] = client_id
+        resp = self._r("DELETE", "/fapi/v1/order", payload, auth=True)
+        if not resp.ok:
+            raise RuntimeError(f"order_cancel_fail:{resp.code}:{resp.msg}")
+        log.info("BX.ORD.CANCEL %s %s", symbol, order_id or client_id)
+        return resp.data or {}
 
     # ------------------------------------------------------------------
-    # WS subscribe (단일 스트림 방식 /ws/<streamName>)
+    # Websocket
     # ------------------------------------------------------------------
-    def subscribe_kline(self, symbol: str, interval: str, on_msg: Callable[[Dict[str, Any]], None]) -> "WSHandle":
-        stream = f"{symbol.lower()}@kline_{interval}"
-        url = f"{self.ws_base}/ws/{stream}"
-        return self._start_ws(url, on_msg)
+    def ws_subscribe(self, streams: List[str], on_msg: Callable[[dict], None]) -> None:
+        """Subscribe to combined websocket streams.
 
-    def subscribe_mark_price(self, symbol: str, on_msg: Callable[[Dict[str, Any]], None]) -> "WSHandle":
-        # 1초 마다 마크프라이스
-        stream = f"{symbol.lower()}@markPrice@1s"
-        url = f"{self.ws_base}/ws/{stream}"
-        return self._start_ws(url, on_msg)
-
-    def subscribe_user(self, listen_key: str, on_msg: Callable[[Dict[str, Any]], None]) -> "WSHandle":
-        url = f"{self.ws_base}/ws/{listen_key}"
-        return self._start_ws(url, on_msg)
-
-    # ------------------------------------------------------------------
-    # WS internals
-    # ------------------------------------------------------------------
-    def _start_ws(self, url: str, on_msg: Callable[[Dict[str, Any]], None]) -> "WSHandle":
-        if not _WS_HAVE:
-            # 폴백: 드물지만 WS 드라이버 없으면 에러. (원하면 REST 폴링으로 대체)
-            log.error("websocket-client 미설치. pip install websocket-client")
-            return WSHandle(error=_err("E_WS_DRIVER_MISSING", "websocket-client not installed", url=url))
-
-        stop_event = threading.Event()
-        app_ref: Dict[str, Any] = {"app": None}
-
-        def _run():
-            backoff = 1.0
-            max_back = 30.0
-
-            def _on_open(_ws):
-                log.info("[WS OPEN] %s", url)
-
-            def _on_message(_ws, message):
-                try:
-                    data = json.loads(message)
-                except Exception:
-                    log.warning("[WS DECODE FAIL] %s ...", message[:120])
-                    return
-                try:
-                    on_msg(data)
-                except Exception as e:
-                    log.exception("on_msg error: %s", e)
-
-            def _on_error(_ws, error):
-                log.warning("[WS ERROR] %s %s", url, error)
-
-            def _on_close(_ws, status_code, msg):
-                log.info("[WS CLOSE] %s status=%s msg=%s", url, status_code, msg)
-
-            while not stop_event.is_set():
-                try:
-                    app = WebSocketApp(
-                        url,
-                        on_open=_on_open,
-                        on_message=_on_message,
-                        on_error=_on_error,
-                        on_close=_on_close,
-                    )
-                    app_ref["app"] = app
-                    app.run_forever(ping_interval=20, ping_timeout=10)
-                except Exception as e:  # pragma: no cover
-                    log.warning("[WS EXCEPT] %s %s", url, e)
-
-                if stop_event.is_set():
-                    break
-
-                # 재연결 백오프
-                log.info("[WS RECONNECT] %s in %.1fs", url, backoff)
-                time.sleep(backoff)
-                backoff = min(max_back, backoff * 2)
-
-        th = threading.Thread(target=_run, name=f"ws:{url}", daemon=True)
-        th.start()
-
-        def _closer():
-            stop_event.set()
-            app = app_ref.get("app")
-            if app is not None:
-                try:
-                    app.close()
-                except Exception:
-                    pass
+        If ``websocket-client`` is not installed we fall back to a light-weight
+        REST polling loop that mimics kline/mark streams every second.
+        """
 
         try:
-            ws_register(url, closer=_closer, thread=th)
+            import websocket  # type: ignore
+        except Exception:
+            log.warning("BX.WS.MISSING websocket-client -> REST polling fallback")
+            self._start_poll_fallback(streams, on_msg)
+            return
+
+        self._ws_stop.clear()
+        url = self.ws_base + "/".join(streams)
+
+        def _run() -> None:
+            while not self._ws_stop.is_set():
+                try:
+                    self._ws = websocket.create_connection(url, timeout=self.timeout)
+                    log.info("BX.WS.CONNECT %s", url)
+                    while not self._ws_stop.is_set():
+                        raw = self._ws.recv()
+                        if not raw:
+                            continue
+                        data = json.loads(raw)
+                        on_msg(data)
+                except Exception as exc:
+                    log.warning("BX.WS.RETRY %s", exc)
+                    time.sleep(1.0)
+                finally:
+                    try:
+                        if self._ws:
+                            self._ws.close()
+                    except Exception:
+                        pass
+                    self._ws = None
+                    if not self._ws_stop.is_set():
+                        log.info("BX.WS.RECONNECT")
+
+        self._ws_th = threading.Thread(target=_run, name="bx-ws", daemon=True)
+        self._ws_th.start()
+
+    def _start_poll_fallback(self, streams: List[str], on_msg: Callable[[dict], None]) -> None:
+        self._ws_stop.clear()
+        desired: Dict[str, Any] = {"kline": [], "mark": []}
+        for stream in streams:
+            if "@kline_" in stream:
+                sym, tf = stream.split("@kline_")
+                desired["kline"].append((sym.upper(), tf))
+            elif "@markPrice" in stream:
+                sym = stream.split("@")[0].upper()
+                desired["mark"].append(sym)
+
+        def _loop() -> None:
+            while not self._ws_stop.is_set():
+                start = time.time()
+                for sym, tf in desired["kline"]:
+                    try:
+                        klines = self.get_klines(sym, tf, limit=2)
+                    except Exception as exc:
+                        log.warning("BX.WS.POLL_FAIL %s %s", sym, exc)
+                        continue
+                    if not klines:
+                        continue
+                    k = klines[-1]
+                    payload = {
+                        "stream": f"{sym.lower()}@kline_{tf}",
+                        "data": {
+                            "e": "kline",
+                            "E": _now_ms(),
+                            "k": {
+                                "t": k["ts"],
+                                "T": k["ts"] + 1,
+                                "s": sym,
+                                "i": tf,
+                                "f": 0,
+                                "L": 0,
+                                "o": str(k["o"]),
+                                "c": str(k["c"]),
+                                "h": str(k["h"]),
+                                "l": str(k["l"]),
+                                "v": str(k["v"]),
+                                "x": False,
+                            },
+                        },
+                    }
+                    on_msg(payload)
+                for sym in desired["mark"]:
+                    try:
+                        mark = self.get_mark_price(sym)
+                    except Exception as exc:
+                        log.warning("BX.WS.POLL_FAIL %s %s", sym, exc)
+                        continue
+                    payload = {
+                        "stream": f"{sym.lower()}@markPrice@1s",
+                        "data": {
+                            "E": mark["time"],
+                            "p": str(mark["markPrice"]),
+                            "s": sym,
+                        },
+                    }
+                    on_msg(payload)
+                delay = max(0.5, 1.0 - (time.time() - start))
+                time.sleep(delay)
+
+        self._ws_th = threading.Thread(target=_loop, name="bx-poll", daemon=True)
+        self._ws_th.start()
+
+    def ws_close(self) -> None:
+        self._ws_stop.set()
+        if self._ws_th and self._ws_th.is_alive():
+            self._ws_th.join(timeout=2.0)
+        try:
+            if self._ws:
+                self._ws.close()
         except Exception:
             pass
-
-        return WSHandle(url=url, stop_event=stop_event, thread=th, closer=_closer)
-
-
-@dataclass
-class WSHandle:
-    url: str = ""
-    stop_event: Optional[threading.Event] = None
-    thread: Optional[threading.Thread] = None
-    closer: Optional[Callable[[], None]] = None
-    error: Optional[Dict[str, Any]] = None
-
-    def stop(self, timeout: float = 2.0) -> None:
-        if self.closer:
-            try:
-                self.closer()
-            except Exception:
-                pass
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=timeout)
-            if self.thread.is_alive():
-                logging.getLogger("binance.client").warning(
-                    "E_WS_STOP_TIMEOUT url=%s timeout=%.1fs", self.url, timeout
-                )
-        ws_unregister(self.url)
-        logging.getLogger("binance.client").info("[WS STOP] %s", self.url)
-
+        self._ws = None
+        self._ws_th = None
 

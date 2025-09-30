@@ -9,6 +9,11 @@
 # YYYY-MM-DD vX.Y.Z
 # - feat(scope): 한글 요약 …
 #
+# 2025-09-30 v0.3.10
+- feat(connector): Binance USDⓈ-M 클라이언트 — 듀얼 모드 ENV 토글, REST/WS 통합, 주문·취소 표준화
+- feat(streams): StreamManager — 완료봉·시계열 스냅샷 유지 및 계정/마크 동시 반영, 스큐/역전 필터
+- feat(exec): OrderRouter — idem/link_id/쿨다운/슬리피지/재시도 가드 및 reduceOnly 대응
+
 # M2 이후 릴리스 예시 템플릿(참고용):
 # 2025-09-03 v0.2.0
 # - feat(features): 피처 파이프라인 1차(지표 계산/NaN 처리/퍼센타일 캐시)
