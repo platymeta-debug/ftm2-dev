@@ -1,3 +1,4 @@
+
 """Discord trading bot orchestrator wiring strategies and the trading engine."""
 
 from __future__ import annotations
@@ -54,12 +55,14 @@ async def sync_orders_on_startup() -> None:
     print("시작 시 주문 상태 동기화를 시작합니다...")
     unsettled_orders = db.get_unsettled_orders()
 
+
     if not unsettled_orders:
         print("동기화할 미체결 주문이 없습니다.")
         return
 
     for order in unsettled_orders:
         try:
+
             if order["binance_order_id"]:
                 server_order = client.futures_get_order(
                     symbol=order["symbol"],
@@ -93,6 +96,7 @@ async def sync_orders_on_startup() -> None:
             print(f"알 수 없는 오류로 주문 동기화 실패 (ID: {order['id']}): {exc}")
 
         await asyncio.sleep(0.2)
+
 
     print("주문 상태 동기화가 완료되었습니다.")
 
@@ -185,8 +189,10 @@ async def place_order(
         await ctx.send(f"❌ 주문 실패: {result.get('error')}")
 
 
+
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN or not BINANCE_API_KEY or not BINANCE_API_SECRET:
         print("오류:.env 파일에 DISCORD_BOT_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET을 설정해야 합니다.")
     else:
+
         bot.run(DISCORD_BOT_TOKEN)
