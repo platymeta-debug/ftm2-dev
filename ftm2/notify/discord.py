@@ -17,9 +17,26 @@ def _post_channel_message(channel_id: int, content: str) -> None:
     url = f"{API_BASE}/channels/{channel_id}/messages"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
     data = {"content": content}
-    resp = requests.post(url, headers=headers, json=data, timeout=10)
-    if resp.status_code >= 300:
-        raise RuntimeError(f"discord_post_fail {resp.status_code} {resp.text}")
+    backoff = 0.7
+    for attempt in range(3):
+        resp = requests.post(url, headers=headers, json=data, timeout=10)
+        if resp.status_code == 429:
+            try:
+                retry_after = float((resp.json() or {}).get("retry_after", backoff))
+            except Exception:
+                retry_after = backoff
+            time.sleep(retry_after)
+            backoff *= 2
+            continue
+        if resp.status_code >= 300:
+            if attempt == 2:
+                raise RuntimeError(
+                    f"discord_post_fail {resp.status_code} {resp.text}"
+                )
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        return
 
 
 # [ANCHOR:DISCORD_ALERTS]
@@ -46,3 +63,40 @@ class Alerts:
             f"• ts: <t:{int(time.time())}:T>"
         )
         _post_channel_message(self.chan, msg)
+
+    # [ANCHOR:DISCORD_CONFIG_ALERTS]
+    def config_profile(self, level: int, envs: dict) -> None:
+        keys = [
+            "RISK_TARGET_PCT",
+            "EXEC_SLIPPAGE_BPS",
+            "REENTER_COOLDOWN_S",
+            "IK_TWIST_GUARD",
+            "IK_THICK_PCT",
+            "W_IMK",
+            "SC_W_TREND",
+            "SC_W_MR",
+            "CORR_CAP_PER_SIDE",
+            "DAILY_MAX_LOSS_PCT",
+            "REGIME_ALIGN_MODE",
+        ]
+        brief = ", ".join([f"{k}={envs.get(k)}" for k in keys if k in envs])
+        _post_channel_message(
+            self.chan,
+            f"**[CONFIG] Risk profile={level} 적용**\n{brief}",
+        )
+
+    def config_leverage(
+        self, symbol: str, value: int, ok: bool, err: str | None = None
+    ) -> None:
+        if ok:
+            _post_channel_message(
+                self.chan, f"**[CONFIG] Leverage {symbol} → {value}x (OK)**"
+            )
+        else:
+            _post_channel_message(
+                self.chan,
+                f"**[CONFIG] Leverage {symbol} → {value}x (FAIL)**\n`{err}`",
+            )
+
+    def config_announce(self, line: str) -> None:
+        _post_channel_message(self.chan, f"[CONFIG] {line}")

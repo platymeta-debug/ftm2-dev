@@ -9,6 +9,20 @@
 # YYYY-MM-DD vX.Y.Z
 # - feat(scope): 한글 요약 …
 #
+2025-10-01 v0.4.4
+- feat(ops): HotReload 콜백 — env.* 변경 즉시 엔진 반영(+Alerts 공지)
+- feat(risk): RiskProfileApplier — 공격성(1~10) → 파라미터 맵핑 일괄 적용(DB 저장·핫리로드)
+- feat(exchange): Binance 레버리지 API set_leverage()
+- feat(panel): /risk /lev 슬래시 + 버튼 패널(리스크±, 레버리지±) — DB 저장·핫리로드·Alerts 공지
+- feat(alerts): CONFIG 공지 포맷 추가(profile/leverage/announce)
+
+2025-09-30 v0.4.5
+- feat(exec): 심볼 필터 기반 수량/가격 반올림·최소노치오날 검증(InvalidQty/Price 예방)
+- feat(exchange): get_symbol_filters() 캐시 — LOT_SIZE/PRICE_FILTER/MIN_NOTIONAL 파싱
+- feat(alerts): Discord 429 백오프 재시도(안정성 향상)
+- feat(connector): REST 429 경미 백오프(속도 유지·안정성 보강)
+- chore(db,kpi): 중복/미사용 import 정리
+
 2025-09-30 v0.4.0
 - feat(risk): RiskEngine v1.5 — ATR/R-unit/상관캡/데일리컷/쿨다운
 - feat(gates): GateKeeper — 레짐/구름일관성/두께/트위스트/포지션충돌/재진입쿨다운

@@ -53,9 +53,38 @@ class OrderRouter:
         self._last_submit_ts = now
         return True
 
-    def _qty_round(self, qty: float) -> float:
-        step = 1e-6
-        return math.floor(qty / step) * step
+    # [ANCHOR:EXEC_ROUNDING]
+    def _round_by(self, x: float, step: float) -> float:
+        if step <= 0:
+            return x
+        k = math.floor((x + 1e-12) / step)
+        return k * step
+
+    def _apply_filters(self, symbol: str, qty: float, ref_price: float) -> dict:
+        f = self.cli.get_symbol_filters(symbol)
+        step = float(f.get("stepSize", 1e-6))
+        tick = float(f.get("tickSize", 1e-6))
+        min_qty = float(f.get("minQty", 0.0))
+        min_notional = float(f.get("minNotional", 0.0))
+
+        qty_rounded = self._round_by(max(0.0, qty), step)
+        px_rounded = self._round_by(ref_price, tick) if ref_price else ref_price
+
+        notional = (px_rounded or ref_price or 0.0) * qty_rounded
+        ok_qty = qty_rounded >= max(min_qty, 0.0)
+        ok_notional = (min_notional <= 0.0) or (notional >= min_notional)
+        return {
+            "qty": qty_rounded,
+            "price": px_rounded,
+            "notional": notional,
+            "ok": bool(ok_qty and ok_notional),
+            "why": []
+            if (ok_qty and ok_notional)
+            else [
+                *(["min_qty"] if not ok_qty else []),
+                *(["min_notional"] if not ok_notional else []),
+            ],
+        }
 
     def _slip_ok(self, ref_px: Optional[float], mkt_px: float) -> bool:
         if ref_px is None or ref_px == 0:
@@ -92,9 +121,14 @@ class OrderRouter:
             )
             return {"status": "skipped", "reason": "slippage"}
 
-        qty = max(0.0, self._qty_round(target.qty))
-        if qty <= 0:
-            return {"status": "skipped", "reason": "qty_zero"}
+        filt = self._apply_filters(target.symbol, target.qty, mark_px)
+        if not filt["ok"] or filt["qty"] <= 0:
+            return {
+                "status": "skipped",
+                "reason": "filter:" + ",".join(filt["why"] or ["qty_zero"]),
+            }
+
+        qty = filt["qty"]
 
         side = "BUY" if target.side.upper().startswith("B") else "SELL"
         client_id = (target.meta or {}).get("link_id") or f"ftm2.{uuid.uuid4().hex[:20]}"
